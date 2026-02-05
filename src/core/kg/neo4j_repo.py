@@ -1,0 +1,97 @@
+import os
+from typing import List, Dict, Any, Optional
+from loguru import logger
+from .repository import KnowledgeGraphRepository
+
+# Optional import to avoid crashing if neo4j is not installed
+try:
+    from neo4j import GraphDatabase
+    NEO4J_AVAILABLE = True
+except ImportError:
+    NEO4J_AVAILABLE = False
+
+class Neo4jGraphRepository(KnowledgeGraphRepository):
+    """
+    Phase 2/3: Production Neo4j Implementation.
+    Connects to a real Neo4j database.
+    """
+    def __init__(self, uri: str = None, user: str = None, password: str = None):
+        self.uri = uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        self.user = user or os.getenv("NEO4J_USER", "neo4j")
+        self.password = password or os.getenv("NEO4J_PASSWORD", "password")
+        self.driver = None
+        
+        if NEO4J_AVAILABLE:
+            try:
+                self.driver = GraphDatabase.driver(self.uri, auth=(self.user, self.password))
+                logger.info(f"Connected to Neo4j at {self.uri}")
+            except Exception as e:
+                logger.warning(f"Failed to connect to Neo4j: {e}")
+        else:
+            logger.warning("Neo4j driver not installed. Install with `pip install neo4j`")
+
+    def close(self):
+        if self.driver:
+            self.driver.close()
+
+    def find_node_by_keyword(self, keyword: str) -> Optional[Dict[str, Any]]:
+        if not self.driver: return None
+        
+        query = """
+        MATCH (n)
+        WHERE toLower(n.name) CONTAINS toLower($keyword) 
+           OR ANY(alias IN n.alias WHERE toLower(alias) CONTAINS toLower($keyword))
+        RETURN n
+        LIMIT 1
+        """
+        try:
+            with self.driver.session() as session:
+                result = session.run(query, keyword=keyword)
+                record = result.single()
+                if record:
+                    node = record["n"]
+                    return {"id": node.element_id, "props": dict(node)}
+        except Exception as e:
+            logger.error(f"Neo4j Query Error: {e}")
+        return None
+
+    def get_related_rules(self, node_id: str) -> List[str]:
+        if not self.driver: return []
+        
+        query = """
+        MATCH (n)-[:HAS_RULE]->(r:Rule)
+        WHERE elementId(n) = $node_id
+        RETURN r.content
+        """
+        try:
+            with self.driver.session() as session:
+                result = session.run(query, node_id=node_id)
+                return [f"- {record['r.content']}" for record in result]
+        except Exception as e:
+            logger.error(f"Neo4j Query Error: {e}")
+        return []
+
+    def get_related_scenarios(self, node_id: str) -> List[Dict[str, Any]]:
+        if not self.driver: return []
+        
+        query = """
+        MATCH (n)-[:HAS_SCENARIO]->(s)
+        WHERE elementId(n) = $node_id
+        RETURN s
+        """
+        try:
+            with self.driver.session() as session:
+                result = session.run(query, node_id=node_id)
+                scenarios = []
+                for record in result:
+                    node = record["s"]
+                    props = dict(node)
+                    scenarios.append({
+                        "type": props.get("type", "General"),
+                        "name": props.get("name", "Unknown"),
+                        "logic": props.get("content", "")
+                    })
+                return scenarios
+        except Exception as e:
+            logger.error(f"Neo4j Query Error: {e}")
+        return []
