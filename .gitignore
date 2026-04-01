@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.ruff_cache/
+
+.venv/
+venv/
+ENV/
+env/
+
+# Local app data / caches (do not commit)
+data/llm_cache.json
+data/project_context.json
+
+# Temp uploads
+temp_upload/
+
+# OS / editor
+.DS_Store
+Thumbs.db
