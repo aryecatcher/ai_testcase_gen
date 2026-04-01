@@ -6,3 +6,5 @@ openai
 python-dotenv
 pydantic
 loguru
+networkx
+rapidfuzz
