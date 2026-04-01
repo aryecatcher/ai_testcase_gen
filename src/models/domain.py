@@ -4,6 +4,37 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
 
+# --- Knowledge Graph Models ---
+
+class KGNodeType(str, Enum):
+    MODULE = "Module"
+    FEATURE = "Feature"
+    RULE = "Rule"
+    EXCEPTION = "Exception"
+    SECURITY = "Security"
+    BUSINESS = "Business"
+
+class KGNodeModel(BaseModel):
+    id: str
+    type: KGNodeType
+    name: str
+    content: str = ""
+    alias: List[str] = []
+    metadata: Dict[str, Any] = {}
+
+class KGRelationshipType(str, Enum):
+    HAS_FEATURE = "HAS_FEATURE"
+    HAS_RULE = "HAS_RULE"
+    HAS_SCENARIO = "HAS_SCENARIO"
+    FOLLOWS = "FOLLOWS"
+    GLOBAL_RULE = "GLOBAL_RULE"
+
+class KGRelationshipModel(BaseModel):
+    source: str
+    target: str
+    relation: KGRelationshipType
+    properties: Dict[str, Any] = {}
+
 # --- Enums ---
 
 class RequirementType(str, Enum):
@@ -19,6 +50,10 @@ class ProcessingStatus(str, Enum):
     ENRICHED = "enriched"
     GENERATED = "generated"
     FAILED = "failed"
+
+class TestCaseStatus(str, Enum):
+    COMPLETE = "complete"
+    PENDING = "pending" # For PENDING_LOGIC
 
 # --- Sub-models for Requirement ---
 
@@ -59,13 +94,23 @@ class Requirement(BaseModel):
     cleaned_text: Optional[str] = None
     
     def calculate_confidence(self) -> float:
-        # Simple mock logic for confidence
-        score = 0.0
-        if self.extracted_entities.module: score += 0.3
-        if self.extracted_entities.feature: score += 0.3
-        if self.extracted_entities.constraints: score += 0.3
-        # In real scenario: E_matched / E_required
-        return min(score, 1.0)
+        """
+        Calculates confidence score based on the formula: Confidence = E_matched / E_required
+        E_required fields: module, feature, constraints (at least one)
+        """
+        required_fields = ["module", "feature"]
+        matched_count = 0
+        
+        if self.extracted_entities.module: matched_count += 1
+        if self.extracted_entities.feature: matched_count += 1
+        
+        # Constraints are treated as a bonus or essential depending on strictness
+        # Here we consider at least one constraint as required for high confidence
+        if self.extracted_entities.constraints: matched_count += 1
+        
+        total_required = len(required_fields) + 1 # +1 for constraints
+        
+        return round(matched_count / total_required, 2)
 
 class BusinessLogic(BaseModel):
     action: str
@@ -101,6 +146,7 @@ class TestCase(BaseModel):
     methodology: List[str] = Field(default_factory=list) # e.g. ["Boundary Value", "Invalid Class"]
     dimension: str = "Functional" # Functional, Interface, Performance
     priority: str = "P2"
+    status: TestCaseStatus = TestCaseStatus.COMPLETE
     
     # Feedback
     review_status: str = "Unreviewed" 

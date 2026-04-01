@@ -1,0 +1,41 @@
+name: quality-gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest ruff
+
+      - name: Lint (critical rules)
+        run: |
+          python -m ruff check . --select E9,F63,F7,F82
+
+      - name: Unit tests (minimal regression set)
+        run: |
+          pytest -q tests/test_progress_callback.py tests/test_minimal_regression.py
+
+      - name: Startup check (compile + import)
+        run: |
+          python -m py_compile ui/main.py src/core/ingestion/ingestor.py src/core/generation/generator.py src/core/output/exporter.py
+          python -c "import importlib; importlib.import_module('ui.main'); print('ui.main import ok')"

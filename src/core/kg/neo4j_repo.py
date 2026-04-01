@@ -2,6 +2,7 @@ import os
 from typing import List, Dict, Any, Optional
 from loguru import logger
 from .repository import KnowledgeGraphRepository
+from ...models.domain import KGNodeModel, KGNodeType
 
 # Optional import to avoid crashing if neo4j is not installed
 try:
@@ -34,7 +35,7 @@ class Neo4jGraphRepository(KnowledgeGraphRepository):
         if self.driver:
             self.driver.close()
 
-    def find_node_by_keyword(self, keyword: str) -> Optional[Dict[str, Any]]:
+    def find_node_by_keyword(self, keyword: str) -> Optional[KGNodeModel]:
         if not self.driver: return None
         
         query = """
@@ -50,7 +51,15 @@ class Neo4jGraphRepository(KnowledgeGraphRepository):
                 record = result.single()
                 if record:
                     node = record["n"]
-                    return {"id": node.element_id, "props": dict(node)}
+                    props = dict(node)
+                    return KGNodeModel(
+                        id=node.element_id,
+                        type=props.get("type", KGNodeType.MODULE),
+                        name=props.get("name", "Unknown"),
+                        content=props.get("content", ""),
+                        alias=props.get("alias", []),
+                        metadata=props.get("metadata", {})
+                    )
         except Exception as e:
             logger.error(f"Neo4j Query Error: {e}")
         return None
@@ -95,3 +104,55 @@ class Neo4jGraphRepository(KnowledgeGraphRepository):
         except Exception as e:
             logger.error(f"Neo4j Query Error: {e}")
         return []
+
+    def expand_scenarios_by_path(self, node_id: str, depth: int = 2) -> List[Dict[str, Any]]:
+        """
+        Neo4j Implementation of Path Search.
+        Uses Cypher to find nodes labeled Exception/Security/Business within 'depth' hops.
+        """
+        if not self.driver: return []
+        
+        # Find all nodes within 'depth' hops that are scenarios
+        # We look for nodes with types that imply scenarios or relations that imply them
+        query = f"""
+        MATCH (n)-[*1..{depth}]-(s)
+        WHERE elementId(n) = $node_id 
+          AND (s:Exception OR s:Security OR s:Business OR s.type IN ['Exception', 'Security', 'Business'])
+        RETURN DISTINCT s
+        """
+        try:
+            with self.driver.session() as session:
+                result = session.run(query, node_id=node_id)
+                scenarios = []
+                for record in result:
+                    node = record["s"]
+                    props = dict(node)
+                    scenarios.append({
+                        "type": f"Path-{props.get('type', 'General')}",
+                        "name": props.get("name", props.get("id", "Unknown")),
+                        "logic": props.get("content", "")
+                    })
+                return scenarios
+        except Exception as e:
+            logger.error(f"Neo4j Path Search Error: {e}")
+        return []
+
+    def add_rule(self, module_keyword: str, rule_content: str) -> bool:
+        """
+        Dynamically adds a rule to Neo4j.
+        """
+        if not self.driver: return False
+        
+        query = """
+        MERGE (n:Module {name: $module})
+        CREATE (r:Rule {content: $content, timestamp: datetime()})
+        CREATE (n)-[:HAS_RULE]->(r)
+        """
+        try:
+            with self.driver.session() as session:
+                session.run(query, module=module_keyword, content=rule_content)
+                logger.info(f"Rule added to Neo4j: {module_keyword} -> {rule_content[:20]}...")
+                return True
+        except Exception as e:
+            logger.error(f"Neo4j Add Rule Error: {e}")
+        return False

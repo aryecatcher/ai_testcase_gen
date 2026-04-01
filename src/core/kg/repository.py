@@ -1,17 +1,17 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
+from ...models.domain import KGNodeModel
 
 class KnowledgeGraphRepository(ABC):
     """
     Abstract Interface for Knowledge Graph Data Access.
-    Phase 1: Abstraction for seamless migration.
     """
     
     @abstractmethod
-    def find_node_by_keyword(self, keyword: str) -> Optional[Dict[str, Any]]:
+    def find_node_by_keyword(self, keyword: str) -> Optional[KGNodeModel]:
         """
         Find a node by keyword (fuzzy match on name or alias).
-        Returns dict with 'id', 'labels', 'properties'.
+        Returns KGNodeModel or None.
         """
         pass
 
@@ -26,6 +26,13 @@ class KnowledgeGraphRepository(ABC):
     def get_related_scenarios(self, node_id: str) -> List[Dict[str, Any]]:
         """
         Get detailed scenario dictionaries.
+        """
+        pass
+
+    @abstractmethod
+    def expand_scenarios_by_path(self, node_id: str, depth: int = 2) -> List[Dict[str, Any]]:
+        """
+        Find scenarios through path search (hidden/indirect associations).
         """
         pass
 

@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import List, Dict, Any
 from loguru import logger
 from docling.document_converter import DocumentConverter
+try:
+    from .smart_hierarchical_parser import SmartHierarchicalParser
+except ImportError:
+    from src.core.ingestion.smart_hierarchical_parser import SmartHierarchicalParser
+import openpyxl
 
 class DocProcessor:
     """
@@ -13,6 +18,7 @@ class DocProcessor:
     """
     def __init__(self):
         self.converter = DocumentConverter()
+        self.hierarchical_parser = SmartHierarchicalParser()
 
     def read_file(self, file_path: str) -> List[Dict[str, Any]]:
         """
@@ -220,29 +226,207 @@ class DocProcessor:
         return final_chunks if final_chunks else [text]
 
     def _read_excel(self, path: Path) -> List[Dict[str, Any]]:
-        # Read Excel using Pandas
-        dfs = pd.read_excel(path, sheet_name=None) # Read all sheets
-        content_parts = []
-        raw_data = {}
+        """
+        Reads Excel files using Pandas and Calamine, with special handling for hierarchical tables.
+        Optimized to avoid redundant file loading.
+        """
+        chunks = []
+        try:
+            # 1. Load Workbook once for hierarchy check (need read_only=False for merged_cells)
+            wb = openpyxl.load_workbook(path, read_only=False, data_only=True)
+            
+            # 2. Use Calamine for fast sheet enumeration and standard reading
+            # Note: Requires 'python-calamine' package
+            try:
+                xl = pd.ExcelFile(path, engine='calamine')
+            except Exception as e:
+                logger.warning(f"Calamine engine failed or not installed: {e}. Falling back to default.")
+                xl = pd.ExcelFile(path)
+
+            for sheet_name in xl.sheet_names:
+                if sheet_name not in wb.sheetnames:
+                    continue
+                
+                ws = wb[sheet_name]
+                
+                # Check for hierarchical structure using the already loaded worksheet
+                if self._is_hierarchical_ws(ws):
+                    logger.info(f"Detected hierarchical table in sheet '{sheet_name}'. Using SmartHierarchicalParser.")
+                    try:
+                        data = self.hierarchical_parser.parse_excel(str(path), sheet_name=sheet_name)
+                        # Use pre-generated markdown if available, otherwise generate it
+                        ai_md = data.get("ai_markdown")
+                        if not ai_md:
+                            ai_md = self.hierarchical_parser.to_ai_friendly_markdown(data)
+                        
+                        chunks.append({
+                            "content": ai_md,
+                            "metadata": {
+                                "source": str(path),
+                                "sheet": sheet_name,
+                                "type": "hierarchical_table",
+                                "structure": data['metadata'],
+                                "status": "ready_for_ai",
+                                "raw_content": {"type": "excel", "data": {sheet_name: data['records']}} 
+                            }
+                        })
+                        continue # Skip standard processing for this sheet
+                    except Exception as e:
+                        logger.warning(f"SmartHierarchicalParser failed for sheet '{sheet_name}': {e}. Falling back to standard processing.")
+                
+                # Fallback / Standard Processing (Optimized with Calamine)
+                try:
+                    df = pd.read_excel(path, sheet_name=sheet_name, engine='calamine')
+                except:
+                    df = pd.read_excel(path, sheet_name=sheet_name)
+                
+                # Remove completely empty rows and columns
+                df = df.dropna(how='all', axis=0).dropna(how='all', axis=1)
+                
+                if df.empty:
+                    continue
+
+                # Standardize column names (convert to string, strip whitespace)
+                df.columns = df.columns.astype(str).str.strip()
+                
+                # Forward fill to handle merged cells (common in Excel requirements)
+                # This propagates values like "System Name" or "Module" down to all relevant rows
+                df = df.ffill()
+                
+                # Smart NaN handling: 
+                # - Numeric columns -> keep NaN (or specific marker if needed)
+                # - Object/Text columns -> fill with ""
+                for col in df.columns:
+                    if df[col].dtype == 'object':
+                        df[col] = df[col].fillna("").astype(str).str.strip()
+                    # For numeric columns, we might leave NaN or fill with 0 based on context, 
+                    # but for markdown generation, keeping them as empty string often looks cleaner
+                    # or we can use a placeholder like "N/A"
+                    
+                # Fill remaining NaNs with empty string for display
+                df = df.fillna("")
+
+                # 2. Extract Metadata (Column Info)
+                col_info = []
+                for idx, col in enumerate(df.columns):
+                    non_null_count = (df[col] != "").sum()
+                    dtype = df[col].dtype
+                    col_info.append(f"{idx+1}. **{col}** ({dtype}, {non_null_count}/{len(df)} non-empty)")
+                
+                col_info_md = "\n".join(col_info)
+
+                # 3. Smart Chunking Strategy
+                # Default to 30 rows per chunk with 5 rows overlap
+                chunk_size = 30
+                overlap = 5
+                total_rows = len(df)
+                
+                # If small sheet, process as single chunk
+                if total_rows <= 50:
+                    chunk_size = total_rows
+                    overlap = 0
+                
+                logger.info(f"Processing sheet '{sheet_name}' ({total_rows} rows). Strategy: Chunk={chunk_size}, Overlap={overlap}")
+                
+                for i in range(0, total_rows, chunk_size):
+                    # Calculate slice range with overlap
+                    start = max(0, i - overlap) if i > 0 else 0
+                    end = min(total_rows, i + chunk_size)
+                    
+                    # Avoid infinite loop if start calculation gets stuck (though logic above is safe)
+                    if start >= end: break
+                    
+                    # Slice DataFrame
+                    chunk_df = df.iloc[start:end]
+                    
+                    # Convert to custom Markdown table (better control than to_markdown)
+                    md_table = self._dataframe_to_markdown(chunk_df)
+                    
+                    # Add Rich Context Header
+                    context_header = f"# Sheet: {sheet_name}\n\n"
+                    context_header += f"**Rows**: {start+1} - {end} | **Total Rows**: {total_rows}\n\n"
+                    
+                    # Only add column info to the first chunk or if it's a very large jump
+                    if i == 0:
+                         context_header += f"## Column Information\n{col_info_md}\n\n"
+                    
+                    context_header += f"## Data Content (Rows {start+1}-{end})\n"
+                    if i > 0:
+                        context_header += f"> Context: Overlap of {i - start} rows from previous chunk included for continuity.\n\n"
+
+                    chunks.append({
+                        "content": context_header + md_table,
+                        "metadata": {
+                            "source": str(path),
+                            "sheet": sheet_name,
+                            "row_start": start,
+                            "row_end": end,
+                            "total_rows": total_rows,
+                            "is_part": True,
+                            "status": "ready_for_ai",
+                            "raw_content": {"type": "excel", "data": {sheet_name: chunk_df.to_dict(orient='records')}} # Add raw content
+                        }
+                    })
+                    
+                    # If we processed the whole table in one go (small table case), break
+                    if chunk_size == total_rows:
+                        break
+                    
+        except Exception as e:
+            logger.error(f"Error reading Excel {path}: {e}")
+            raise
+
+        return chunks
+
+    def _is_hierarchical_ws(self, ws) -> bool:
+        """
+        Check if a worksheet contains hierarchical structure (merged cells).
+        Optimized to work with an already loaded worksheet object.
+        """
+        try:
+            # ws is an openpyxl Worksheet object
+            # Heuristic: Check number of merged cell ranges
+            merged_count = len(ws.merged_cells.ranges)
+            
+            # Also check if it's a reasonably large table
+            if ws.max_row < 3:
+                return False
+                
+            # Threshold: more than 3 merged areas suggests structure
+            return merged_count > 3
+        except Exception as e:
+            logger.warning(f"Could not check hierarchy: {e}")
+            return False
+
+    def _dataframe_to_markdown(self, df: pd.DataFrame) -> str:
+        """
+        Custom DataFrame to Markdown converter for better control over formatting.
+        - Handles special characters in cells (like pipes |)
+        - Aligns columns
+        - Handles empty cells cleanly
+        """
+        if df.empty:
+            return ""
+
+        # Helper to sanitize cell content
+        def sanitize(val):
+            s = str(val).replace("\n", "<br>").replace("|", "\\|")
+            return s if s else " " # Return space for empty cells to keep alignment
+
+        # Header
+        headers = [sanitize(c) for c in df.columns]
+        header_row = "| " + " | ".join(headers) + " |"
+        separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
         
-        for sheet_name, df in dfs.items():
-            # Convert to markdown table for LLM
-            md_table = df.to_markdown(index=False)
-            content_parts.append(f"## Sheet: {sheet_name}\n\n{md_table}")
+        lines = [header_row, separator_row]
+        
+        # Data Rows
+        for _, row in df.iterrows():
+            row_vals = [sanitize(val) for val in row]
+            line = "| " + " | ".join(row_vals) + " |"
+            lines.append(line)
             
-            # Keep raw records
-            # Handle NaN with fillna
-            df = df.fillna("")
-            raw_data[sheet_name] = df.to_dict(orient="records")
-            
-        return [{
-            "content": "\n\n".join(content_parts),
-            "metadata": {
-                "raw_content": {"type": "excel", "data": raw_data},
-                "source": str(path),
-                "status": "ready_for_ai"
-            }
-        }]
+        return "\n".join(lines)
 
     def _read_json(self, path: Path) -> List[Dict[str, Any]]:
         with open(path, 'r', encoding='utf-8') as f:
