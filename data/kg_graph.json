@@ -1,0 +1,323 @@
+{
+  "directed": true,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "type": "Module",
+      "id": "用户中心"
+    },
+    {
+      "type": "Feature",
+      "alias": [
+        "登录",
+        "Sign In",
+        "客户录入",
+        "Customer Entry"
+      ],
+      "id": "Login"
+    },
+    {
+      "type": "Rule",
+      "content": "Password length must be 8-16 characters",
+      "id": "PwdLengthRule"
+    },
+    {
+      "type": "Rule",
+      "content": "Lock account after 3 failed attempts within 1 hour",
+      "id": "LockoutRule"
+    },
+    {
+      "type": "Rule",
+      "content": "手机号必须为11位数字，且符合国家标准",
+      "id": "MobileFormatRule"
+    },
+    {
+      "type": "Rule",
+      "content": "姓名长度限制为2-50个字符",
+      "id": "NameLengthRule"
+    },
+    {
+      "type": "Exception",
+      "content": "User clicks forget password flow",
+      "id": "ForgetPwd"
+    },
+    {
+      "type": "Security",
+      "content": "Input SQL in password field",
+      "id": "SQLInjection"
+    },
+    {
+      "type": "Exception",
+      "content": "手机号已存在，提示重复",
+      "id": "DuplicateMobile"
+    },
+    {
+      "type": "Business",
+      "content": "客户在黑名单中，禁止录入",
+      "id": "BlacklistCheck"
+    },
+    {
+      "type": "Module",
+      "id": "交易中心"
+    },
+    {
+      "type": "Feature",
+      "alias": [
+        "支付",
+        "Pay"
+      ],
+      "id": "Payment"
+    },
+    {
+      "type": "Rule",
+      "content": "Payment amount must be positive",
+      "id": "PositiveAmount"
+    },
+    {
+      "type": "Rule",
+      "content": "Check user balance before transaction",
+      "id": "BalanceCheck"
+    },
+    {
+      "type": "Exception",
+      "content": "Balance is less than amount",
+      "id": "InsufficientFunds"
+    },
+    {
+      "type": "Exception",
+      "content": "Payment gateway timeout",
+      "id": "Timeout"
+    },
+    {
+      "type": "Module",
+      "id": "订单中心"
+    },
+    {
+      "type": "Feature",
+      "alias": [
+        "下单",
+        "Create Order"
+      ],
+      "id": "OrderCreate"
+    },
+    {
+      "type": "Rule",
+      "content": "库存必须大于购买数量",
+      "id": "StockCheck"
+    },
+    {
+      "type": "Exception",
+      "content": "库存不足，下单失败",
+      "id": "StockInsufficient"
+    },
+    {
+      "type": "Module",
+      "id": "API网关"
+    },
+    {
+      "type": "Feature",
+      "alias": [
+        "接口",
+        "API"
+      ],
+      "id": "ApiCall"
+    },
+    {
+      "type": "Rule",
+      "content": "单IP每分钟请求不超过60次",
+      "id": "RateLimit"
+    },
+    {
+      "type": "Exception",
+      "content": "触发限流，返回 HTTP 429",
+      "id": "RateLimitExceeded"
+    },
+    {
+      "type": "Module",
+      "id": "安全基线"
+    },
+    {
+      "type": "Security",
+      "content": "通用 SQL 注入 payload 探测",
+      "id": "CommonSQLi"
+    },
+    {
+      "type": "Security",
+      "content": "通用 XSS 脚本注入探测",
+      "id": "CommonXSS"
+    },
+    {
+      "type": "Rule",
+      "content": "支付金额必须保留两位小数",
+      "id": "Rule_3655517414270833181"
+    },
+    {
+      "type": "Rule",
+      "content": "支付金额必须保留两位小数",
+      "id": "Rule_8670032993010382838"
+    },
+    {
+      "type": "Rule",
+      "content": "支付金额必须保留两位小数",
+      "id": "Rule_-2785970047261536615"
+    },
+    {
+      "type": "Rule",
+      "content": "支付金额必须保留两位小数",
+      "id": "Rule_2251184181522339832"
+    }
+  ],
+  "links": [
+    {
+      "relation": "HAS_FEATURE",
+      "source": "用户中心",
+      "target": "Login"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "用户中心",
+      "target": "安全基线"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Login",
+      "target": "PwdLengthRule"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Login",
+      "target": "LockoutRule"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Login",
+      "target": "MobileFormatRule"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Login",
+      "target": "NameLengthRule"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "Login",
+      "target": "ForgetPwd"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "Login",
+      "target": "SQLInjection"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "Login",
+      "target": "DuplicateMobile"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "Login",
+      "target": "BlacklistCheck"
+    },
+    {
+      "relation": "HAS_FEATURE",
+      "source": "交易中心",
+      "target": "Payment"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "交易中心",
+      "target": "安全基线"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Payment",
+      "target": "PositiveAmount"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Payment",
+      "target": "BalanceCheck"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "Payment",
+      "target": "InsufficientFunds"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "Payment",
+      "target": "Timeout"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Payment",
+      "target": "Rule_3655517414270833181"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Payment",
+      "target": "Rule_8670032993010382838"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Payment",
+      "target": "Rule_-2785970047261536615"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "Payment",
+      "target": "Rule_2251184181522339832"
+    },
+    {
+      "relation": "HAS_FEATURE",
+      "source": "订单中心",
+      "target": "OrderCreate"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "订单中心",
+      "target": "安全基线"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "OrderCreate",
+      "target": "StockCheck"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "OrderCreate",
+      "target": "StockInsufficient"
+    },
+    {
+      "relation": "HAS_FEATURE",
+      "source": "API网关",
+      "target": "ApiCall"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "API网关",
+      "target": "安全基线"
+    },
+    {
+      "relation": "HAS_RULE",
+      "source": "ApiCall",
+      "target": "RateLimit"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "ApiCall",
+      "target": "RateLimitExceeded"
+    },
+    {
+      "relation": "GLOBAL_RULE",
+      "source": "安全基线",
+      "target": "CommonSQLi"
+    },
+    {
+      "relation": "GLOBAL_RULE",
+      "source": "安全基线",
+      "target": "CommonXSS"
+    }
+  ]
+}
