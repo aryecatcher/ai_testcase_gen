@@ -8,3 +8,4 @@ pydantic
 loguru
 networkx
 rapidfuzz
+Faker
