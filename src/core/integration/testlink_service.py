@@ -143,6 +143,7 @@ class TestLinkImporter:
         
         for tc in test_cases:
             try:
+                ti = tc.get_test_instruction() if hasattr(tc, "get_test_instruction") else tc.test_instruction
                 suite_name = tc.dimension or "Functional"
                 # 创建或获取测试套件
                 suite_id = self.create_or_get_test_suite(suite_name)
@@ -151,11 +152,11 @@ class TestLinkImporter:
                 steps = []
                 # tc.test_instruction.steps is a list of strings "1. xxx"
                 # We need to parse them or just put them as is
-                for i, step_str in enumerate(tc.test_instruction.steps):
+                for i, step_str in enumerate(ti.steps):
                     step = {
                         'step_number': i + 1,
                         'actions': step_str,
-                        'expected_results': tc.test_instruction.expected_result if i == len(tc.test_instruction.steps) - 1 else "",
+                        'expected_results': ti.expected_result if i == len(ti.steps) - 1 else "",
                         'execution_type': 1  # Manual
                     }
                     steps.append(step)
@@ -165,7 +166,7 @@ class TestLinkImporter:
                     steps.append({
                         'step_number': 1,
                         'actions': "Execute test",
-                        'expected_results': tc.test_instruction.expected_result,
+                        'expected_results': ti.expected_result,
                         'execution_type': 1
                     })
 
@@ -185,7 +186,7 @@ class TestLinkImporter:
                     authorlogin=self.author_login,
                     summary=f"AI Generated Case for Req: {tc.related_req_id}",
                     steps=steps,
-                    preconditions=tc.test_instruction.pre_condition,
+                    preconditions=ti.pre_condition,
                     importance=importance,
                     executiontype=1 # Manual
                 )

@@ -1,15 +1,11 @@
+import os
 from typing import List, Dict, Any, Optional, Tuple
 from rapidfuzz import fuzz
 from loguru import logger
 import numpy as np
 
-# 延迟导入，避免没有安装时报错
-try:
-    from sentence_transformers import SentenceTransformer
-    EMBEDDING_AVAILABLE = True
-except ImportError:
-    EMBEDDING_AVAILABLE = False
-    logger.warning("sentence-transformers not installed. Semantic matching disabled.")
+SentenceTransformer = None
+EMBEDDING_AVAILABLE = None
 
 
 class KeywordMatcher:
@@ -27,21 +23,43 @@ class KeywordMatcher:
     # 如果精度要求高，换 BAAI/bge-base-zh-v1.5
     DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, use_semantic: bool = True):
+    def __init__(self, model_name: str = DEFAULT_MODEL, use_semantic: bool = None):
         self._model: Optional[Any] = None
         self._model_name = model_name
-        self._use_semantic = use_semantic and EMBEDDING_AVAILABLE
+        
+        # Determine if semantic should be used
+        if use_semantic is None:
+            # Check env var for manual override
+            env_val = os.getenv("USE_SEMANTIC_MATCHER", "false").lower()
+            use_semantic = (env_val == "true")
+            
+        self._use_semantic = bool(use_semantic)
 
         # 预计算索引: { text -> embedding vector }
         # 在 build_index() 调用后填充
         self._index_texts: List[str] = []
         self._index_matrix: Optional[np.ndarray] = None  # shape: (n, dim)
 
-        if self._use_semantic:
-            self._load_model()
+        # Do not load during init if it blocks startup; build_index or is_match will trigger it
+        # if self._use_semantic:
+        #     self._load_model()
 
     def _load_model(self):
         """懒加载模型，首次调用时才真正加载"""
+        global SentenceTransformer, EMBEDDING_AVAILABLE
+        if EMBEDDING_AVAILABLE is None:
+            try:
+                from sentence_transformers import SentenceTransformer as _SentenceTransformer
+                SentenceTransformer = _SentenceTransformer
+                EMBEDDING_AVAILABLE = True
+            except ImportError:
+                EMBEDDING_AVAILABLE = False
+                logger.warning("sentence-transformers not installed. Semantic matching disabled.")
+
+        if not EMBEDDING_AVAILABLE:
+            self._use_semantic = False
+            return
+
         if self._model is None:
             logger.info(f"Loading embedding model: {self._model_name}")
             self._model = SentenceTransformer(self._model_name)
@@ -62,6 +80,8 @@ class KeywordMatcher:
         if not self._use_semantic or not texts:
             return
 
+        self._load_model() # Ensure model is loaded before encoding
+
         self._index_texts = [t.strip() for t in texts]
         logger.info(f"Building embedding index for {len(texts)} nodes...")
         embeddings = self._model.encode(self._index_texts, normalize_embeddings=True)
@@ -72,6 +92,8 @@ class KeywordMatcher:
         """增量更新索引（新增节点时使用）"""
         if not self._use_semantic or not new_texts:
             return
+
+        self._load_model() # Ensure model is loaded before encoding
 
         new_embeddings = self._model.encode(
             [t.strip() for t in new_texts],

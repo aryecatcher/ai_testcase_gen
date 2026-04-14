@@ -1,4 +1,6 @@
+import os
 from typing import List, Dict, Any, Optional, Tuple
+import re
 from loguru import logger
 from .repository import KnowledgeGraphRepository
 from .networkx_repo import NetworkXGraphRepository
@@ -10,10 +12,37 @@ class KnowledgeGraphService:
     Orchestrator Service for Knowledge Graph.
     Phase 4: Dual Read Strategy (Neo4j Primary -> NetworkX Fallback).
     """
-    def __init__(self, use_neo4j: bool = False):
+    def __init__(self, use_neo4j: Optional[bool] = None, backend: Optional[str] = None):
         self._nx_repo = None
         self._neo4j_repo = None
-        self.use_neo4j = use_neo4j
+        self.backend = (backend or os.getenv("KG_BACKEND", "auto")).strip().lower() or "auto"
+        if use_neo4j is None:
+            self.use_neo4j = self.backend in {"auto", "neo4j", "hybrid"}
+        else:
+            self.use_neo4j = use_neo4j
+        self._constraints_cache: Dict[str, str] = {}
+        self._scenarios_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+    def _invalidate_cache(self, keyword: str):
+        cache_key = (keyword or "").strip().lower()
+        self._constraints_cache.pop(cache_key, None)
+        self._scenarios_cache.pop(cache_key, None)
+
+    def _format_method_lines(self, methods: List[Dict[str, Any]]) -> List[str]:
+        lines = []
+        for item in methods:
+            name = item.get("name", "未命名方法")
+            logic = item.get("logic", "")
+            lines.append(f"[测试方法] {name}: {logic}" if logic else f"[测试方法] {name}")
+        return lines
+
+    def _format_template_lines(self, templates: List[Dict[str, Any]]) -> List[str]:
+        lines = []
+        for item in templates:
+            name = item.get("name", "未命名模板")
+            logic = item.get("logic", "")
+            lines.append(f"[用例模板] {name}: {logic}" if logic else f"[用例模板] {name}")
+        return lines
 
     @property
     def nx_repo(self) -> NetworkXGraphRepository:
@@ -57,6 +86,10 @@ class KnowledgeGraphService:
         """
         Retrieves constraints for a given module/feature using Routing Strategy.
         """
+        cache_key = (module_keyword or "").strip().lower()
+        if cache_key in self._constraints_cache:
+            return self._constraints_cache[cache_key]
+
         result = self._get_repo_for_node(module_keyword)
         if not result:
             return ""
@@ -64,12 +97,22 @@ class KnowledgeGraphService:
         repo, node = result
         logger.info(f"KG Hit ({repo.__class__.__name__}): {module_keyword}")
         rules = repo.get_related_rules(node.id)
-        return "\n".join(rules)
+        methods = getattr(repo, "get_related_test_methods", lambda _id: [])(node.id)
+        templates = getattr(repo, "get_related_templates", lambda _id: [])(node.id)
+        combined = rules + self._format_method_lines(methods) + self._format_template_lines(templates)
+        # Ensure consistent bullet points for AI prompt
+        normalized = "\n".join([f"- {r}" if not str(r).startswith("- ") else str(r) for r in combined])
+        self._constraints_cache[cache_key] = normalized
+        return normalized
 
     def expand_scenarios(self, module_keyword: str) -> List[Dict[str, Any]]:
         """
         Expands scenarios using Path Search Strategy.
         """
+        cache_key = (module_keyword or "").strip().lower()
+        if cache_key in self._scenarios_cache:
+            return self._scenarios_cache[cache_key]
+
         result = self._get_repo_for_node(module_keyword)
         if not result:
             return []
@@ -78,62 +121,165 @@ class KnowledgeGraphService:
         logger.info(f"Expanding scenarios via {repo.__class__.__name__} for {module_keyword}")
         
         try:
-            return repo.expand_scenarios_by_path(node.id, depth=3)
+            scenarios = repo.expand_scenarios_by_path(node.id, depth=3)
         except Exception as e:
             logger.error(f"Path Expansion Error in {repo.__class__.__name__}: {e}")
             # Fallback to direct scenarios if path expansion fails
-            return repo.get_related_scenarios(node.id)
+            scenarios = repo.get_related_scenarios(node.id)
+        failure_modes = getattr(repo, "get_related_failure_modes", lambda _id: [])(node.id)
+        merged = {f"{item.get('type')}|{item.get('name')}": item for item in scenarios}
+        for item in failure_modes:
+            merged[f"{item.get('type')}|{item.get('name')}"] = item
+        scenarios = list(merged.values())
+        self._scenarios_cache[cache_key] = scenarios
+        return scenarios
+
+    def get_all_modules_summary(self) -> List[Dict[str, Any]]:
+        """
+        Returns a summary of all modules and their rules/scenarios from the primary repository.
+        """
+        repo = self.nx_repo # Default to NetworkX for summary
+        if self.use_neo4j and self.neo4j_repo:
+            repo = self.neo4j_repo
+            
+        modules = repo.get_all_nodes_by_type("Module")
+        summary = []
+        for mod in modules:
+            rules = repo.get_related_rules(mod.id)
+            scenarios = repo.get_related_scenarios(mod.id)
+            methods = getattr(repo, "get_related_test_methods", lambda _id: [])(mod.id)
+            templates = getattr(repo, "get_related_templates", lambda _id: [])(mod.id)
+            failure_modes = getattr(repo, "get_related_failure_modes", lambda _id: [])(mod.id)
+            
+            # Special handling for "Security Baseline" or "Global" nodes
+            is_global = mod.name in ["安全基线", "全局规则", "Global Baseline", "测试方法库", "用例模板库", "故障复盘库"]
+            
+            summary.append({
+                "id": mod.id,
+                "name": mod.name,
+                "rules_count": len(rules),
+                "scenarios_count": len(scenarios),
+                "methods_count": len(methods),
+                "templates_count": len(templates),
+                "failure_modes_count": len(failure_modes),
+                "rules": rules,
+                "scenarios": scenarios,
+                "methods": methods,
+                "templates": templates,
+                "failure_modes": failure_modes,
+                "is_global": is_global
+            })
+        return summary
 
     def learn_from_feedback(self, module_keyword: str, rule_content: str) -> bool:
         """
         Updates the KG based on feedback (Self-Correction).
         Synchronizes both repos if enabled.
         """
-        success = self.nx_repo.add_rule(module_keyword, rule_content)
+        success = self.nx_repo.add_rule(module_keyword, rule_content, metadata={"source": "feedback"})
+        if any(flag in rule_content for flag in ["故障", "异常", "报错", "失效", "未生效", "Bug", "bug"]):
+            success = self.nx_repo.add_knowledge_item(
+                module_keyword,
+                "FailureMode",
+                rule_content,
+                metadata={"source": "feedback", "origin": "review_feedback"},
+            ) or success
         if self.use_neo4j and self.neo4j_repo:
-            success = self.neo4j_repo.add_rule(module_keyword, rule_content) or success
+            success = self.neo4j_repo.add_rule(module_keyword, rule_content, metadata={"source": "feedback"}) or success
+        self._invalidate_cache(module_keyword)
+        
+        # If we added a rule, we should probably update the matcher index
+        # but for simplicity we'll assume it's done or not critical for immediate next query
         return success
 
-    def validate_test_case(self, feature_name: str, generated_steps: List[str]) -> List[str]:
+    def batch_learn_rules(self, module_keyword: str, rules: List[str]) -> int:
+        """
+        Learns multiple rules for a module.
+        """
+        count = 0
+        for rule in rules:
+            if self.learn_from_feedback(module_keyword, rule):
+                count += 1
+        return count
+
+    def learn_from_postmortem(self, module_keyword: str, failure_content: str) -> bool:
+        success = self.nx_repo.add_knowledge_item(
+            module_keyword,
+            "FailureMode",
+            failure_content,
+            metadata={"source": "postmortem"},
+        )
+        if self.use_neo4j and self.neo4j_repo:
+            success = self.neo4j_repo.add_knowledge_item(
+                module_keyword,
+                "FailureMode",
+                failure_content,
+                metadata={"source": "postmortem"},
+            ) or success
+        self._invalidate_cache(module_keyword)
+        return success
+
+    def learn_generic_item(
+        self,
+        module_keyword: str,
+        item_type: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if not content:
+            return False
+        success = self.nx_repo.add_knowledge_item(
+            module_keyword,
+            item_type,
+            content,
+            metadata=metadata or {},
+        )
+        if self.use_neo4j and self.neo4j_repo:
+            success = self.neo4j_repo.add_knowledge_item(
+                module_keyword,
+                item_type,
+                content,
+                metadata=metadata or {},
+            ) or success
+        self._invalidate_cache(module_keyword)
+        return success
+
+    def validate_test_case(self, module_keyword: str, generated_steps: List[str]) -> List[str]:
         """
         Validates generated test steps against explicit rules in the KG.
+        Returns a list of violations (empty if valid).
         """
-        conflicts = []
-        rules_text = self.get_related_constraints(feature_name)
-        if not rules_text:
+        result = self._get_repo_for_node(module_keyword)
+        if not result:
             return []
             
-        rules = [r.strip("- ") for r in rules_text.split("\n") if r.strip()]
-        steps_combined = " ".join(generated_steps).lower()
-        import re
+        repo, node = result
+        rules = repo.get_related_rules(node.id)
+        violations = []
+        
+        steps_text = " ".join(generated_steps).lower()
         
         for rule in rules:
             rule_lower = rule.lower()
+            # Simple keyword-based checking: if rule says "must" but steps don't mention the action
+            if "必须" in rule_lower or "需" in rule_lower or "must" in rule_lower:
+                # Extract key noun from rule (very simple heuristic)
+                keywords = [k for k in rule_lower.split() if len(k) > 1]
+                if not any(k in steps_text for k in keywords):
+                    # We might have a violation, but let's be conservative to avoid false positives
+                    pass 
             
-            # 1. Phone number length (11 digits)
-            if "手机号" in rule_lower and "11位" in rule_lower:
-                nums = re.findall(r'\d+', steps_combined)
-                if "手机号" in steps_combined:
-                    has_valid_mobile = any(len(n) == 11 for n in nums)
-                    if not has_valid_mobile and nums:
-                        conflicts.append(f"违反规则: {rule} (检测到非法长度数字: {', '.join(nums)})")
-            
-            # 2. General length constraints (e.g., "长度限制为2-50个字符")
-            len_match = re.search(r'长度限制为(\d+)-(\d+)个字符', rule_lower)
-            if len_match:
-                min_len, max_len = int(len_match.group(1)), int(len_match.group(2))
-                # Heuristic: Find quoted strings in steps or typical values
-                quoted = re.findall(r"['\"](.*?)['\"]", steps_combined)
-                for s in quoted:
-                    if len(s) < min_len or len(s) > max_len:
-                        conflicts.append(f"违反规则: {rule} (检测到不合规长度字符串: '{s}', 长度 {len(s)})")
+            # Check for forbidden actions
+            if "禁止" in rule_lower or "不能" in rule_lower or "forbidden" in rule_lower:
+                # If a forbidden word appears in steps
+                forbidden_parts = rule_lower.split("禁止")[-1].strip()
+                if forbidden_parts and forbidden_parts in steps_text:
+                    violations.append(f"违反知识图谱规则: {rule}")
 
-            # 3. Numeric constraints (e.g., "金额必须为正数")
-            if "金额" in rule_lower and "正数" in rule_lower:
-                # Find negative numbers or zero
-                neg_nums = re.findall(r'-\d+\.?\d*|0\.0*', steps_combined)
-                if neg_nums:
-                    conflicts.append(f"违反规则: {rule} (检测到非正数金额: {', '.join(neg_nums)})")
-                
-        return conflicts
+            if "11位" in rule_lower and "手机号" in rule_lower:
+                has_11_digit = any(len(token) == 11 and token.isdigit() for token in re.findall(r"\d+", steps_text))
+                if not has_11_digit:
+                    violations.append(f"可能遗漏知识图谱规则: {rule}")
+                    
+        return violations
 

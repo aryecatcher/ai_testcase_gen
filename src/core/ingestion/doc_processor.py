@@ -64,19 +64,37 @@ class DocProcessor:
         
         chunk_data = []
         for i, chunk_text in enumerate(chunks):
+            ai_content = self._build_markdown_ai_content(
+                markdown_text=chunk_text,
+                source_name=path.name,
+                chunk_index=i,
+                total_chunks=len(chunks),
+            )
             chunk_data.append({
-                "content": chunk_text,
+                "content": ai_content,
                 "metadata": {
                     "raw_content": doc_json,
                     "source": str(path),
                     "chunk_index": i,
                     "total_chunks": len(chunks),
                     "status": "ready_for_ai",
-                    "docling_version": "v2"
+                    "docling_version": "v2",
+                    "semantic_format": "markdown"
                 }
             })
             
         return chunk_data
+
+    def _build_markdown_ai_content(self, markdown_text: str, source_name: str, chunk_index: int, total_chunks: int) -> str:
+        return (
+            f"# 文档语义片段\n\n"
+            f"> 来源文件: {source_name}\n"
+            f"> 解析格式: Markdown\n"
+            f"> 当前片段: {chunk_index + 1}/{total_chunks}\n"
+            f"> 说明: 以下内容已保留标题层级、列表和表格语义，适合后续 AI 进行结构化理解。\n\n"
+            f"## 正文内容\n\n"
+            f"{markdown_text}"
+        )
 
     def _table_aware_chunking(self, doc_json: dict, path: Path) -> List[Dict[str, Any]]:
         """
@@ -256,8 +274,19 @@ class DocProcessor:
                         data = self.hierarchical_parser.parse_excel(str(path), sheet_name=sheet_name)
                         # Use pre-generated markdown if available, otherwise generate it
                         ai_md = data.get("ai_markdown")
-                        if not ai_md:
-                            ai_md = self.hierarchical_parser.to_ai_friendly_markdown(data)
+                        hierarchy_tree = self.hierarchical_parser.to_markdown_tree(data)
+                        records = data.get("records", [])
+                        headers = data.get("headers", [])
+                        ai_md = self._build_excel_ai_content(
+                            sheet_name=sheet_name,
+                            source_name=path.name,
+                            headers=headers,
+                            records=records,
+                            row_start=0,
+                            row_end=len(records),
+                            total_rows=len(records),
+                            hierarchy_summary=hierarchy_tree,
+                        )
                         
                         chunks.append({
                             "content": ai_md,
@@ -267,7 +296,8 @@ class DocProcessor:
                                 "type": "hierarchical_table",
                                 "structure": data['metadata'],
                                 "status": "ready_for_ai",
-                                "raw_content": {"type": "excel", "data": {sheet_name: data['records']}} 
+                                "raw_content": {"type": "excel", "data": {sheet_name: data['records']}},
+                                "semantic_format": "excel_json"
                             }
                         })
                         continue # Skip standard processing for this sheet
@@ -306,15 +336,6 @@ class DocProcessor:
                 # Fill remaining NaNs with empty string for display
                 df = df.fillna("")
 
-                # 2. Extract Metadata (Column Info)
-                col_info = []
-                for idx, col in enumerate(df.columns):
-                    non_null_count = (df[col] != "").sum()
-                    dtype = df[col].dtype
-                    col_info.append(f"{idx+1}. **{col}** ({dtype}, {non_null_count}/{len(df)} non-empty)")
-                
-                col_info_md = "\n".join(col_info)
-
                 # 3. Smart Chunking Strategy
                 # Default to 30 rows per chunk with 5 rows overlap
                 chunk_size = 30
@@ -339,23 +360,19 @@ class DocProcessor:
                     # Slice DataFrame
                     chunk_df = df.iloc[start:end]
                     
-                    # Convert to custom Markdown table (better control than to_markdown)
-                    md_table = self._dataframe_to_markdown(chunk_df)
-                    
-                    # Add Rich Context Header
-                    context_header = f"# Sheet: {sheet_name}\n\n"
-                    context_header += f"**Rows**: {start+1} - {end} | **Total Rows**: {total_rows}\n\n"
-                    
-                    # Only add column info to the first chunk or if it's a very large jump
-                    if i == 0:
-                         context_header += f"## Column Information\n{col_info_md}\n\n"
-                    
-                    context_header += f"## Data Content (Rows {start+1}-{end})\n"
-                    if i > 0:
-                        context_header += f"> Context: Overlap of {i - start} rows from previous chunk included for continuity.\n\n"
+                    records = chunk_df.to_dict(orient='records')
+                    ai_content = self._build_excel_ai_content(
+                        sheet_name=sheet_name,
+                        source_name=path.name,
+                        headers=[str(c) for c in df.columns],
+                        records=records,
+                        row_start=start + 1,
+                        row_end=end,
+                        total_rows=total_rows,
+                    )
 
                     chunks.append({
-                        "content": context_header + md_table,
+                        "content": ai_content,
                         "metadata": {
                             "source": str(path),
                             "sheet": sheet_name,
@@ -364,7 +381,8 @@ class DocProcessor:
                             "total_rows": total_rows,
                             "is_part": True,
                             "status": "ready_for_ai",
-                            "raw_content": {"type": "excel", "data": {sheet_name: chunk_df.to_dict(orient='records')}} # Add raw content
+                            "raw_content": {"type": "excel", "data": {sheet_name: records}},
+                            "semantic_format": self._excel_preferred_format(chunk_df)
                         }
                     })
                     
@@ -377,6 +395,63 @@ class DocProcessor:
             raise
 
         return chunks
+
+    def _excel_preferred_format(self, df: pd.DataFrame) -> str:
+        if len(df.columns) > 20 or len(df) > 80:
+            return "excel_csv"
+        return "excel_json"
+
+    def _build_excel_ai_content(
+        self,
+        sheet_name: str,
+        source_name: str,
+        headers: List[str],
+        records: List[Dict[str, Any]],
+        row_start: int,
+        row_end: int,
+        total_rows: int,
+        hierarchy_summary: str = "",
+    ) -> str:
+        fmt = "JSON" if len(headers) <= 20 and len(records) <= 80 else "CSV"
+        lines = [
+            "# Excel 结构化数据片段",
+            "",
+            f"> 来源文件: {source_name}",
+            f"> Sheet: {sheet_name}",
+            f"> 行范围: {row_start}-{row_end} / {total_rows}",
+            f"> 推荐读取格式: {fmt}",
+            "> 说明: 以下数据已将表头与每行值绑定；请优先依据字段名理解业务含义，避免错列或错行。",
+            "",
+            "## 元数据说明",
+            f"- 列数: {len(headers)}",
+            f"- 列名: {', '.join(headers)}",
+        ]
+        if hierarchy_summary:
+            lines.extend([
+                "",
+                "## 层级摘要",
+                hierarchy_summary,
+            ])
+
+        if fmt == "JSON":
+            lines.extend([
+                "",
+                "## JSON Records",
+                "```json",
+                json.dumps(records, ensure_ascii=False, indent=2),
+                "```",
+            ])
+        else:
+            df = pd.DataFrame(records, columns=headers)
+            csv_text = df.to_csv(index=False)
+            lines.extend([
+                "",
+                "## CSV Data",
+                "```csv",
+                csv_text,
+                "```",
+            ])
+        return "\n".join(lines)
 
     def _is_hierarchical_ws(self, ws) -> bool:
         """

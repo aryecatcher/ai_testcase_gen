@@ -37,8 +37,24 @@ class KnowledgeGraphRepository(ABC):
         pass
 
     @abstractmethod
-    def add_rule(self, module_keyword: str, rule_content: str) -> bool:
+    def add_rule(self, module_keyword: str, rule_content: str, metadata: Dict[str, Any] = None) -> bool:
         """
         Dynamically adds a rule to the graph (Self-Correction).
         """
         pass
+
+    @abstractmethod
+    def get_all_nodes_by_type(self, node_type: str) -> List[KGNodeModel]:
+        """
+        Get all nodes of a specific type.
+        """
+        pass
+
+    def get_related_test_methods(self, node_id: str) -> List[Dict[str, Any]]:
+        return []
+
+    def get_related_templates(self, node_id: str) -> List[Dict[str, Any]]:
+        return []
+
+    def get_related_failure_modes(self, node_id: str) -> List[Dict[str, Any]]:
+        return []

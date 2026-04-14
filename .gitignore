@@ -10,9 +10,18 @@ venv/
 ENV/
 env/
 
+# Local environment variables
+.env
+
 # Local app data / caches (do not commit)
+data/*.db
+data/*project_context*.bak
+data/kg_audit.json
+data/kg_candidates.json
 data/llm_cache.json
 data/project_context.json
+
+docling_output.txt
 
 # Temp uploads
 temp_upload/

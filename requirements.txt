@@ -9,3 +9,10 @@ loguru
 networkx
 rapidfuzz
 Faker
+sqlmodel
+langgraph
+fastapi
+uvicorn
+httpx
+sentence-transformers
+numpy

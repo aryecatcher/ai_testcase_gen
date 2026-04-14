@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 # Add project root to path
@@ -8,7 +9,12 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 from src.core.ai.llm_service import _llm_cache_key
+from src.core.ai.evaluator import build_case_map, score_judge_result
+from src.core.generation.validators import ValidationInterceptor
 from src.core.generation.generator import TestCaseGenerator
+from src.core.ingestion.change_analyzer import analyze_requirement_changes, apply_case_change_plan
+from src.core.kg.graph_service import KnowledgeGraphService
+from src.core.kg.networkx_repo import NetworkXGraphRepository
 from src.core.output.exporter import TestCaseExporter
 from src.core.output.postman_exporter import PostmanExporter
 from src.models.domain import IngestionMetadata, Requirement, TestCase, TestInstruction
@@ -56,7 +62,7 @@ def test_generator_smoke_returns_case_objects():
     cases = generator.generate([req])
     assert cases
     assert cases[0].related_req_id == "REQ-SMOKE"
-    assert cases[0].test_instruction.expected_result
+    assert cases[0].get_test_instruction().expected_result
 
 
 def test_exporters_smoke_output_non_empty():
@@ -89,3 +95,135 @@ def test_exporters_smoke_output_non_empty():
     payload = json.loads(postman.decode("utf-8"))
     assert payload["info"]["name"] == "Generated API Tests"
     assert len(payload["item"]) == 1
+
+    headers = TestCaseExporter([case1, case2]).to_sheet_values()[0]
+    assert headers == [
+        "测试用例 ID",
+        "需求对应",
+        "优先级",
+        "前提条件",
+        "测试目的描述",
+        "测试步骤概述",
+        "期望结果",
+        "实测结果",
+        "Pass/ Fail/NT",
+    ]
+
+
+def test_requirement_change_analysis_rebinds_existing_cases():
+    old_req = Requirement(
+        id="REQ-OLD-1",
+        original_text="用户可以登录系统并查看首页",
+        ingestion_metadata={"source_file": "spec_v1.docx"},
+        extracted_entities={"module": "认证中心", "feature": "登录", "constraints": []},
+    )
+    removed_req = Requirement(
+        id="REQ-OLD-2",
+        original_text="用户可以修改头像",
+        ingestion_metadata={"source_file": "spec_v1.docx"},
+        extracted_entities={"module": "用户中心", "feature": "头像", "constraints": []},
+    )
+    new_req = Requirement(
+        id="REQ-NEW-1",
+        original_text="用户可以登录系统、查看首页，并在连续失败 3 次后锁定账号",
+        ingestion_metadata={"source_file": "spec_v2.docx"},
+        extracted_entities={"module": "认证中心", "feature": "登录", "constraints": []},
+    )
+    case = TestCase(
+        test_case_id="TC-KEEP",
+        related_req_id="REQ-OLD-1",
+        title="登录成功",
+        test_instruction=TestInstruction(steps=["1. 打开登录页"], expected_result="登录成功"),
+    )
+
+    report = analyze_requirement_changes([old_req, removed_req], [new_req], [case])
+
+    assert report["summary"]["updated"] == 1
+    assert report["summary"]["removed"] == 1
+    assert report["remap_old_to_new_req_id"] == {"REQ-OLD-1": "REQ-NEW-1"}
+
+    updated_cases = apply_case_change_plan([case], report)
+    assert updated_cases[0].related_req_id == "REQ-NEW-1"
+    assert updated_cases[0].system_env["change_impact"] == "needs_update"
+
+
+def test_validation_interceptor_redacts_sensitive_values():
+    interceptor = ValidationInterceptor()
+    raw_case = {
+        "title": "校验 sk_live_1234567890abcdef",
+        "precondition": "联系 admin@example.com 并访问 8.8.8.8",
+        "steps": ["输入手机号 13912345678", "提交 token=abcdef1234567890"],
+        "expected_result": "系统通知 admin@example.com",
+        "test_data": {
+            "valid": {
+                "real_name": "张三",
+                "server_ip": "8.8.8.8",
+                "access_token": "sk_live_1234567890abcdef",
+            },
+            "invalid": {
+                "contact_email": "ops@example.com",
+            },
+        },
+    }
+
+    sanitized = interceptor.validate_case(raw_case)
+
+    assert sanitized["test_data"]["valid"]["real_name"] == "测试用户"
+    assert sanitized["test_data"]["valid"]["server_ip"] == "203.0.113.10"
+    assert sanitized["test_data"]["valid"]["access_token"] == "<REDACTED_SECRET>"
+    assert sanitized["test_data"]["invalid"]["contact_email"] == "test@example.com"
+    assert "<REDACTED_SECRET>" in sanitized["title"]
+    assert "203.0.113.10" in sanitized["precondition"]
+
+
+def test_kg_backend_can_be_configured_by_env(monkeypatch):
+    monkeypatch.setenv("KG_BACKEND", "networkx")
+    assert KnowledgeGraphService().use_neo4j is False
+
+    monkeypatch.setenv("KG_BACKEND", "auto")
+    assert KnowledgeGraphService().use_neo4j is True
+
+
+def test_ai_evaluator_helpers_are_stable():
+    case = TestCase(
+        test_case_id="TC-EVAL",
+        related_req_id="REQ-EVAL",
+        title="评估样例",
+        test_instruction=TestInstruction(steps=["1. 打开页面"], expected_result="展示成功"),
+    )
+    case_map = build_case_map([case])
+    assert list(case_map.keys()) == ["REQ-EVAL"]
+    assert case_map["REQ-EVAL"][0].test_case_id == "TC-EVAL"
+
+    assert score_judge_result({"violations": [], "gaps": [], "passed": True}) == 100
+    assert score_judge_result({"violations": ["v1"], "gaps": ["g1"], "passed": False}) == 70
+
+
+def test_kg_ontology_auto_upgrade_is_triggered(tmp_path):
+    storage = tmp_path / "kg_graph.json"
+    audit = tmp_path / "kg_audit.json"
+    repo = NetworkXGraphRepository(storage_path=str(storage), audit_path=str(audit))
+
+    ok = repo.add_knowledge_item(
+        "报表中心",
+        "FailureMode",
+        "导出功能在超时后未写入失败审计日志",
+        metadata={"feature": "导出"},
+    )
+
+    assert ok is True
+    assert repo.graph.has_node("报表中心")
+    assert repo.graph.has_edge("报表中心", "故障复盘库")
+
+    feature_nodes = [
+        node for node, data in repo.graph.nodes(data=True)
+        if data.get("type") == "Feature" and "导出" in ([node] + (data.get("alias") or []))
+    ]
+    assert feature_nodes, "应自动补出 feature 节点"
+
+    failure_nodes = [
+        node for node, data in repo.graph.nodes(data=True)
+        if data.get("type") == "FailureMode" and data.get("content") == "导出功能在超时后未写入失败审计日志"
+    ]
+    assert failure_nodes, "应成功入库 failure mode"
+    assert any(entry.get("action") == "AUTO_UPGRADE_ONTOLOGY" for entry in repo.audit_log)
