@@ -94,7 +94,7 @@ async function parseFiles() {
       message="支持 DOCX / XLSX / TXT / JSON / MD 上传并调用后端解析；文档较大时可能需要 1-3 分钟。"
     />
     <a-space direction="vertical" fill class="upload-actions">
-      <input type="file" multiple @change="onFileChange" />
+      <input type="file" multiple accept=".doc,.docx,.xlsx,.xls,.txt,.json,.md,.markdown" @change="onFileChange" />
       <a-checkbox v-model="replaceExisting">替换已有需求（会清空当前需求与用例）</a-checkbox>
       <a-button type="primary" :loading="parsing" :disabled="selectedFiles.length === 0" @click="parseFiles">
         上传并解析

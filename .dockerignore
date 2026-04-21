@@ -1,11 +1,15 @@
 .git
 .github
+.env
+.env.docker
+.env.production
 .venv
 __pycache__
 *.pyc
 node_modules
 frontend/node_modules
 frontend/dist
+frontend/.env.local
 data/*.db
 data/kg_graph.json
 data/feishu_sheet_settings.json

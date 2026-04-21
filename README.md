@@ -52,7 +52,24 @@ cd ai_testcase_gen
 cp .env.example .env
 ```
 
-Windows PowerShell 可直接复制 `.env.example` 为 `.env`。
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+首次使用建议至少检查以下配置：
+
+```env
+DATABASE_URL=sqlite:///data/app_database.db
+OPENAI_API_KEY=ollama
+OPENAI_BASE_URL=http://localhost:11434/v1
+LLM_MODEL_GEN=deepseek-r1:7b
+KG_BACKEND=networkx
+```
+
+如果你只是本地快速试用，可以先保持 SQLite。
+如果你要部署到服务器，建议改成 PostgreSQL。
 
 ### 3. 安装依赖
 
@@ -103,7 +120,23 @@ powershell -ExecutionPolicy Bypass -File scripts/start-frontend.ps1
 - 前端：`http://127.0.0.1:5173`
 - 后端：`http://127.0.0.1:8002`
 
+### 4.1 启动后如何使用项目
+
+推荐按下面顺序体验：
+
+1. 打开 `Web V2` 首页，确认顶部“启动检查”显示后端可用
+2. 进入“导入需求”，上传 `docx/xlsx/txt/json/md` 需求文件
+3. 等解析完成后，进入“生成用例”选择需求并开始生成
+4. 在“生成进度”中查看当前阶段、结果数量和是否生成完毕
+5. 进入“评审与导出”查看生成结果，按“最新生成批次”筛选并导出
+6. 进入“数据统计”查看质量特性分类结果
+7. 如需知识沉淀，再进入“知识图谱”查看模块和规则
+
+如果你只想快速验证链路，建议先导入一份小型需求文档，只生成几条需求对应的用例。
+
 ### 5. 启动兼容版本 `Legacy V1`
+
+注意：`Legacy V1` 只是旧版 UI，启动前仍然需要先按上面的步骤启动后端服务。
 
 Linux / macOS:
 
@@ -121,6 +154,28 @@ powershell -ExecutionPolicy Bypass -File scripts/start-legacy-ui.ps1
 
 - Streamlit：`http://127.0.0.1:8504`
 
+## 使用建议
+
+### 场景 1：本地快速试用
+
+- 使用 `Web V2`
+- 数据库保持默认 `SQLite`
+- 模型服务可使用本地 `Ollama`
+- 适合个人验证功能和调试页面
+
+### 场景 2：团队共享试用
+
+- 使用 `Web V2`
+- 数据库改为 `PostgreSQL`
+- 后端建议跑在固定机器上
+- 前端建议构建后交给 `Nginx`
+
+### 场景 3：历史兼容
+
+- 使用 `Legacy V1`
+- 适合继续沿用旧的 Streamlit 操作方式
+- 不建议作为后续长期主线
+
 ## Docker 部署
 
 项目提供容器化部署入口，适合 Linux 服务器快速落地：
@@ -130,11 +185,34 @@ cp .env.docker.example .env.docker
 docker compose --env-file .env.docker up --build
 ```
 
+Windows PowerShell:
+
+```powershell
+Copy-Item .env.docker.example .env.docker
+docker compose --env-file .env.docker up --build
+```
+
 默认服务：
 
 - `frontend`：Nginx 托管的 Vue 前端
 - `backend`：FastAPI API
 - `postgres`：PostgreSQL
+
+Linux 服务器使用 Docker 时，请额外注意模型服务地址：
+
+- `OPENAI_BASE_URL` 不要直接照搬 `http://host.docker.internal:11434/v1`
+- 这个地址在 Windows / macOS Docker Desktop 下常见可用，但在 Linux 上通常不可直接使用
+- Linux 上请改成容器可访问的真实地址，例如宿主机内网地址、同一 Compose 网络中的模型容器地址，或外部模型服务地址
+- 如果不修改这个值，容器中的后端即使启动成功，也可能无法连接模型服务
+
+如果你在 Windows 上看到下面这类报错：
+
+```text
+open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified
+```
+
+说明不是项目配置错误，而是 `Docker Desktop` 的 Linux 引擎还没有启动。
+先打开 `Docker Desktop` 并确认 `Engine running`，再重新执行 `docker compose`。
 
 详细说明见 [DEPLOYMENT_MATRIX.md](file:///e:/internship/fang/ai_testcase_gen/docs/DEPLOYMENT_MATRIX.md) 和 [POSTGRESQL_DEPLOY.md](file:///e:/internship/fang/ai_testcase_gen/docs/POSTGRESQL_DEPLOY.md)。
 
@@ -154,6 +232,26 @@ docker compose --env-file .env.docker up --build
   - `networkx` / `neo4j` / `hybrid` / `auto`
 - `BACKEND_URL`
   - Legacy Streamlit 连接后端地址
+
+## 常见问题
+
+### 1. 启动后页面一直提示后端不可用
+
+- 确认后端进程已经启动
+- 确认前端实际连接的后端地址正确
+- 先访问 `http://127.0.0.1:8002/health` 看是否返回 `healthy`
+
+### 2. 模型连接异常
+
+- 确认 `OPENAI_BASE_URL` 对应的模型服务已启动
+- 如果你使用 Ollama，确认目标模型已经可用
+- 机器资源不足时，本地模型也可能加载失败
+
+### 3. Docker 启动失败
+
+- 先执行 `docker info`
+- 如果报 `dockerDesktopLinuxEngine` 错误，先启动 Docker Desktop
+- 再执行 `docker compose --env-file .env.docker up --build`
 
 ## 推荐部署路线
 
