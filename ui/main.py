@@ -31,6 +31,7 @@ from data.storage import load_json, save_json
 from src.models.domain import ProjectContext, Requirement, TestCase
 from src.data.database import init_db, get_all_requirements, get_all_test_cases, save_requirement, save_test_case, get_session
 from src.data.migration import migrate_json_to_db
+from src.core.analytics import annotate_quality_characteristics, build_statistics
 from src.core.ai.evaluator import build_case_map, evaluate_requirements
 from src.core.ingestion.change_analyzer import (
     analyze_requirement_changes,
@@ -69,6 +70,31 @@ def _backend_headers() -> Dict[str, str]:
         "X-OPENAI-BASE-URL": _FIXED_LLM_BASE_URL,
         "X-OPENAI-API-KEY": _FIXED_LLM_API_KEY,
     }
+
+
+def _get_backend_startup_status() -> Dict[str, Any]:
+    ok, err = _check_backend()
+    if not ok:
+        return {
+            "status": "error",
+            "message": f"后端不可用：{err}",
+            "checked_at": datetime.now().isoformat(timespec="seconds"),
+            "steps": [],
+        }
+    try:
+        with httpx.Client(timeout=8.0, trust_env=False) as client:
+            resp = client.get(f"{_BACKEND_URL}/startup-status")
+        resp.raise_for_status()
+        payload = resp.json()
+        payload["message"] = payload.get("llm", {}).get("message", "")
+        return payload
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"获取后端启动状态失败：{e}",
+            "checked_at": datetime.now().isoformat(timespec="seconds"),
+            "steps": [],
+        }
 
 def _get_conf(meta) -> float:
     """兼容 IngestionMetadata 对象和 dict 两种情况"""
@@ -195,6 +221,8 @@ def _mark_requirements_batch(reqs: List[Requirement], uploaded_files: List[Any])
         meta = _meta_to_dict(req.ingestion_metadata)
         if not meta.get("source_file") and file_names:
             meta["source_file"] = file_names[0]
+        if not meta.get("project_name") and (meta.get("source_file") or file_names):
+            meta["project_name"] = meta.get("source_file") or file_names[0]
         meta["upload_batch_id"] = batch_id
         meta["parsed_at"] = batch_time.isoformat(timespec="seconds")
         meta["batch_files"] = file_names
@@ -206,6 +234,7 @@ def _mark_requirements_batch(reqs: List[Requirement], uploaded_files: List[Any])
 def _stamp_generated_cases(cases: List[TestCase]) -> List[TestCase]:
     generated_at = datetime.now().isoformat(timespec="seconds")
     batch = _current_batch_meta()
+    req_project_map = {r.id: _get_requirement_project_name(r) for r in st.session_state.context.requirements}
     for tc in cases:
         env = tc.system_env if isinstance(tc.system_env, dict) else {}
         env = dict(env or {})
@@ -213,6 +242,7 @@ def _stamp_generated_cases(cases: List[TestCase]) -> List[TestCase]:
         env["source_upload_batch_id"] = batch.get("batch_id", "")
         env["source_parsed_at"] = batch.get("parsed_at", "")
         env["source_files"] = batch.get("files", [])
+        env["project_name"] = req_project_map.get(tc.related_req_id) or (batch.get("files", [""])[0] if batch.get("files") else "")
         tc.system_env = env
     st.session_state.current_generation_time = generated_at
     return cases
@@ -244,6 +274,74 @@ def _extract_feishu_tokens(url: str) -> Dict[str, str]:
     if m_base:
         result["app_token"] = m_base.group(1)
     return result
+
+
+def _build_feishu_sheet_url(spreadsheet_token: str, sheet_id: str = "") -> str:
+    token = (spreadsheet_token or "").strip()
+    sid = (sheet_id or "").strip()
+    if not token:
+        return ""
+    url = f"https://feishu.cn/sheets/{token}"
+    if sid:
+        url += f"?sheet={sid}"
+    return url
+
+
+def _sheet_export_setting_defaults() -> Dict[str, Any]:
+    return {
+        "feishu_shared_url": "",
+        "feishu_app_id": os.getenv("FEISHU_APP_ID", ""),
+        "feishu_tenant_token": os.getenv("FEISHU_TENANT_TOKEN", ""),
+        "feishu_app_secret": os.getenv("FEISHU_APP_SECRET", ""),
+        "feishu_open_base_url": os.getenv("FEISHU_OPEN_BASE_URL", "https://open.feishu.cn"),
+        "feishu_requirement_link_base_url": os.getenv("FEISHU_REQUIREMENT_LINK_BASE_URL", ""),
+        "feishu_spreadsheet_token": os.getenv("FEISHU_SPREADSHEET_TOKEN", ""),
+        "feishu_sheet_id": os.getenv("FEISHU_SHEET_ID", ""),
+        "feishu_sheet_start_cell": os.getenv("FEISHU_SHEET_START_CELL", "A1"),
+        "feishu_auto_create_sheet": True,
+        "feishu_sheet_title": "",
+        "feishu_sheet_folder_token": os.getenv("FEISHU_SHEET_FOLDER_TOKEN", ""),
+        "feishu_last_sheet_url": "",
+    }
+
+
+def _load_sheet_export_settings() -> None:
+    saved = load_json("feishu_sheet_settings") or {}
+    defaults = _sheet_export_setting_defaults()
+    for key, default in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = saved.get(key, default)
+
+
+def _save_sheet_export_settings() -> None:
+    defaults = _sheet_export_setting_defaults()
+    payload = {key: st.session_state.get(key, default) for key, default in defaults.items()}
+    save_json("feishu_sheet_settings", payload)
+
+
+def _get_requirement_project_name(req: Requirement) -> str:
+    meta = _meta_to_dict(req.ingestion_metadata)
+    if meta.get("project_name"):
+        return str(meta.get("project_name"))
+    if meta.get("source_file"):
+        return str(meta.get("source_file"))
+    batch_files = meta.get("batch_files") or []
+    if batch_files:
+        return str(batch_files[0])
+    return ""
+
+
+def _backfill_case_project_names(cases: List[TestCase], requirements: List[Requirement]) -> None:
+    req_project_map = {r.id: _get_requirement_project_name(r) for r in requirements}
+    fallback_name = (st.session_state.get("current_upload_files") or [""])[0]
+    for tc in cases:
+        env = _meta_to_dict(tc.system_env)
+        if env.get("project_name"):
+            continue
+        project_name = req_project_map.get(tc.related_req_id) or fallback_name
+        if project_name:
+            env["project_name"] = project_name
+            tc.system_env = env
 
 _KG_CANDIDATES_PATH = _PROJECT_ROOT / "data" / "kg_candidates.json"
 
@@ -485,6 +583,7 @@ def _preview_rows(cases: List[TestCase], req_meta: Optional[Dict[str, Dict[str, 
         meta = req_meta.get(tc.related_req_id) or {}
         rows.append({
             "Case ID": tc.test_case_id,
+            "项目名称": meta.get("project_name") or _meta_to_dict(tc.system_env).get("project_name", "—"),
             "需求ID": tc.related_req_id,
             "模块": meta.get("module") or "—",
             "功能": meta.get("feature") or "—",
@@ -668,28 +767,292 @@ def _heading_html(label: str, icon: str) -> str:
 
 
 def _render_heading(label: str, icon: str) -> None:
-    st.markdown(_heading_html(label, icon), unsafe_allow_html=True)
+    return None
+
+
+def _tool_item_html(title: str, active: bool = False, muted: bool = False) -> str:
+    cls = "sidebar-menu-static active" if active else "sidebar-menu-static"
+    return (
+        f'<div class="{cls}">'
+        f'<div class="sidebar-menu-row">'
+        f'<div class="sidebar-menu-text">'
+        f'<div class="sidebar-menu-main">'
+        f'<span class="tool-title">{title}</span>'
+        f"</div>"
+        f'</div>'
+        f"</div>"
+    )
+
+
+def _dashboard_card(title: str, value: str, meta: str = "", accent: str = "blue") -> str:
+    return (
+        f'<div class="dashboard-card dashboard-card-{accent}">'
+        f'<div class="dashboard-card-accent"></div>'
+        f'<div class="dashboard-card-title">{title}</div>'
+        f'<div class="dashboard-card-value">{value}</div>'
+        f'<div class="dashboard-card-meta">{meta}</div>'
+        "</div>"
+    )
+
+
+def _rate_ring_html(percent: float, passed: int, failed: int, skipped: int) -> str:
+    pct = max(0, min(int(round(percent)), 100))
+    color = "#52c41a" if pct >= 80 else "#faad14" if pct >= 60 else "#ff4d4f"
+    angle = pct * 3.6
+    return f"""
+    <div class="rate-ring-wrap">
+        <div class="rate-ring" style="background: conic-gradient({color} {angle}deg, #edf2f7 {angle}deg 360deg);">
+            <div class="rate-ring-inner">
+                <div class="rate-ring-value">{pct}<span>%</span></div>
+            </div>
+        </div>
+        <div class="rate-ring-legend">
+            <div><span class="legend-dot passed"></span>通过 {passed}</div>
+            <div><span class="legend-dot failed"></span>失败 {failed}</div>
+            <div><span class="legend-dot skipped"></span>跳过 {skipped}</div>
+        </div>
+    </div>
+    """
+
+
+def _status_block_html(title: str, status: str, detail: str = "") -> str:
+    status_map = {
+        "success": ("status-success", "正常"),
+        "degraded": ("status-warn", "降级"),
+        "error": ("status-error", "异常"),
+        "pending": ("status-pending", "等待"),
+    }
+    cls, text = status_map.get(status, ("status-pending", status or "未知"))
+    return (
+        f'<div class="status-block {cls}">'
+        f'<div class="status-block-head"><span>{title}</span><span class="status-pill">{text}</span></div>'
+        f'<div class="status-block-detail">{detail or "—"}</div>'
+        f'</div>'
+    )
+
+
+def _menu_tree_group_html(title: str, active: bool = False) -> str:
+    row_cls = "sidebar-menu-static active" if active else "sidebar-menu-static"
+    return (
+        f'<div class="{row_cls}">'
+        f'<div class="sidebar-menu-row">'
+        f'<div class="sidebar-menu-text">'
+        f'<div class="sidebar-menu-main"><span class="tool-title">{title}</span></div>'
+        f"</div>"
+        f"</div>"
+        f"</div>"
+    )
+
+
+def _nav_button(label: str, page: str) -> None:
+    current = st.session_state.get("current_page", "首页")
+    if st.button(
+        label,
+        key=f"nav_{page}",
+        use_container_width=True,
+        type="primary" if current == page else "secondary",
+    ):
+        st.session_state.current_page = page
+        st.rerun()
+
+
+def _render_nav_row(label: str, page: str, indent: bool = False) -> None:
+    if indent:
+        c_pad, c_text = st.columns([0.45, 6.55], gap="small")
+        with c_pad:
+            st.markdown("")
+    else:
+        c_text = st.container()
+    with c_text:
+        _nav_button(label, page)
+
+
+def _topbar_html(page: str) -> str:
+    return f"""
+    <div class="platform-topbar">
+        <div class="platform-topbar-left">
+            <div class="platform-logo">W</div>
+            <div>
+                <div class="platform-name">WHartTest</div>
+                <div class="platform-breadcrumb">一体化智能测试管理平台 / {page}</div>
+            </div>
+        </div>
+        <div class="platform-topbar-right">
+            <div class="platform-theme-btn" title="主题切换">T</div>
+            <div class="platform-select-pill">演示项目 [Demo Project]</div>
+            <div class="platform-pill">当前版本: v2.1.0</div>
+            <div class="platform-user-wrap">
+                <div class="platform-avatar">A</div>
+                <div class="platform-user">admin</div>
+                <div class="platform-user-caret">v</div>
+            </div>
+        </div>
+    </div>
+    """
 
 
 APP_CSS = """
 <style>
-    .main .block-container { padding-top: 1.25rem; padding-bottom: 2rem; }
-    h1 { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; font-weight: 600; color: #111827; font-size: 1.75rem; margin-bottom: 0.25rem; }
-    .app-subtitle { color: #4b5563; font-size: 0.95rem; margin-bottom: 1.25rem; }
+    .stApp { background: #f3f4f6; }
+    .main .block-container { padding-top: 0.85rem; padding-bottom: 2rem; max-width: 1520px; }
+    h1 { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; font-weight: 700; color: #111827; font-size: 1.9rem; margin-bottom: 0.15rem; }
+    .platform-topbar {
+        background: #ffffff;
+        border: 1px solid #d9dee8;
+        border-radius: 14px;
+        padding: 0.85rem 1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 0.85rem;
+        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+    }
+    .platform-topbar-left, .platform-topbar-right { display: flex; align-items: center; gap: 0.8rem; }
+    .platform-logo {
+        width: 34px; height: 34px; border-radius: 8px; background: #2563eb; color: #fff;
+        display: flex; align-items: center; justify-content: center; font-weight: 700;
+        box-shadow: 0 6px 18px rgba(37, 99, 235, 0.25);
+    }
+    .platform-name { font-size: 1rem; font-weight: 700; color: #111827; }
+    .platform-breadcrumb { font-size: 0.78rem; color: #6b7280; margin-top: 0.12rem; }
+    .platform-select-pill {
+        background: #f7f8fa; border: 1px solid #e5e7eb; color: #374151;
+        border-radius: 8px; padding: 0.38rem 0.72rem; font-size: 0.8rem; font-weight: 500;
+    }
+    .platform-theme-btn {
+        width: 32px; height: 32px; border-radius: 999px; background: #f7f8fa; border: 1px solid #e5e7eb;
+        color: #374151; display: flex; align-items: center; justify-content: center; font-size: 0.92rem; font-weight: 700;
+    }
+    .platform-pill {
+        background: #f3f4f6; border: 1px solid #e5e7eb; color: #374151;
+        border-radius: 999px; padding: 0.35rem 0.65rem; font-size: 0.78rem; font-weight: 600;
+    }
+    .platform-avatar {
+        width: 34px; height: 34px; border-radius: 999px; background: #0ea5e9; color: white;
+        display: flex; align-items: center; justify-content: center; font-weight: 700;
+    }
+    .platform-user-wrap {
+        display: flex; align-items: center; gap: 0.45rem; padding-left: 0.15rem;
+    }
+    .platform-user { font-size: 0.84rem; color: #374151; font-weight: 600; }
+    .platform-user-caret { font-size: 0.74rem; color: #6b7280; margin-left: -0.1rem; }
+    .sidebar-brand {
+        background: #ffffff;
+        border: 1px solid #dfe4ea;
+        border-radius: 14px;
+        padding: 0.9rem 0.95rem;
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        margin-bottom: 0.9rem;
+        box-shadow: 0 1px 8px rgba(15, 23, 42, 0.04);
+    }
+    .sidebar-brand-logo {
+        width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(135deg, #2563eb 0%, #38bdf8 100%);
+        color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1rem;
+    }
+    .sidebar-brand-text { font-size: 0.96rem; font-weight: 700; color: #1f2937; }
+    .app-shell-header {
+        background: transparent;
+        border: none;
+        border-radius: 0;
+        padding: 0.15rem 0 0.55rem 0;
+        margin-bottom: 0.25rem;
+        box-shadow: none;
+    }
+    .app-shell-title { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    .app-shell-minor {
+        color: #6b7280; font-size: 0.82rem; font-weight: 500; letter-spacing: 0.01em;
+    }
+    .dashboard-card {
+        background: #ffffff;
+        border: 1px solid #dfe4ea;
+        border-radius: 14px;
+        padding: 0.95rem 1rem;
+        min-height: 112px;
+        box-shadow: 0 1px 8px rgba(15, 23, 42, 0.03);
+        position: relative;
+        overflow: hidden;
+    }
+    .dashboard-card-accent { position: absolute; inset: 0 auto 0 0; width: 4px; background: #2563eb; }
+    .dashboard-card-blue .dashboard-card-accent { background: #2563eb; }
+    .dashboard-card-green .dashboard-card-accent { background: #52c41a; }
+    .dashboard-card-orange .dashboard-card-accent { background: #faad14; }
+    .dashboard-card-purple .dashboard-card-accent { background: #722ed1; }
+    .dashboard-card-title { color: #6b7280; font-size: 0.86rem; margin-bottom: 0.5rem; }
+    .dashboard-card-value { color: #111827; font-size: 1.9rem; font-weight: 700; line-height: 1.1; }
+    .dashboard-card-meta { color: #6b7280; font-size: 0.82rem; margin-top: 0.45rem; }
+    .dashboard-panel {
+        background: #ffffff;
+        border: 1px solid #dfe4ea;
+        border-radius: 14px;
+        padding: 1rem;
+        margin-top: 0.9rem;
+        box-shadow: 0 1px 8px rgba(15, 23, 42, 0.03);
+    }
+    .dashboard-panel-title { color: #111827; font-size: 1.02rem; font-weight: 700; margin-bottom: 0.8rem; }
+    .sidebar-menu-static {
+        border-radius: 6px; padding: 0.14rem 0; margin-bottom: 0.08rem; border: 1px solid transparent;
+    }
+    .sidebar-menu-static.active {
+        background: rgba(0, 160, 233, 0.04);
+        border-color: rgba(0, 160, 233, 0.08);
+    }
+    .sidebar-menu-row { display: flex; align-items: flex-start; gap: 0.45rem; }
+    .sidebar-menu-text { min-width: 0; flex: 1; }
+    .sidebar-menu-main { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+    .sidebar-menu-child { margin-left: 0.85rem; position: relative; }
+    .sidebar-menu-child::before {
+        content: ""; position: absolute; left: -0.42rem; top: -0.12rem; bottom: -0.12rem; width: 1px; background: #e5e7eb;
+    }
+    .tool-title { font-weight: 600; color: #111827; font-size: 0.84rem; }
+    .sidebar-group-title {
+        color: #6b7280; font-size: 0.76rem; font-weight: 700; letter-spacing: 0.04em;
+        margin: 0.35rem 0 0.45rem 0; text-transform: uppercase;
+    }
+    .sidebar-section-tip {
+        color: #6b7280; font-size: 0.74rem; line-height: 1.35; margin-bottom: 0.32rem;
+    }
+    .metric-chip-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.65rem; }
+    .metric-chip {
+        background: #f3f4f6; color: #374151; border-radius: 999px;
+        padding: 0.28rem 0.62rem; font-size: 0.76rem; font-weight: 600;
+    }
+    .progress-legend {
+        display: flex; gap: 0.9rem; flex-wrap: wrap; margin: 0.35rem 0 0.65rem 0;
+        color: #6b7280; font-size: 0.78rem;
+    }
+    .progress-dot { width: 8px; height: 8px; display: inline-block; border-radius: 999px; margin-right: 0.3rem; }
+    .rate-ring-wrap { display: flex; flex-direction: column; align-items: center; gap: 0.8rem; padding-top: 0.3rem; }
+    .rate-ring {
+        width: 138px; height: 138px; border-radius: 999px; display: flex; align-items: center; justify-content: center;
+    }
+    .rate-ring-inner {
+        width: 104px; height: 104px; border-radius: 999px; background: #ffffff; display: flex; align-items: center; justify-content: center;
+        box-shadow: inset 0 0 0 1px #eef2f7;
+    }
+    .rate-ring-value { font-size: 2rem; font-weight: 700; color: #111827; line-height: 1; }
+    .rate-ring-value span { font-size: 0.9rem; color: #6b7280; margin-left: 0.15rem; }
+    .rate-ring-legend { width: 100%; display: grid; grid-template-columns: 1fr; gap: 0.45rem; color: #4b5563; font-size: 0.82rem; }
+    .legend-dot.passed { background: #52c41a; }
+    .legend-dot.failed { background: #ff4d4f; }
+    .legend-dot.skipped { background: #faad14; }
+    .status-block {
+        background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 0.7rem 0.8rem; margin-bottom: 0.45rem;
+    }
+    .status-block-head { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; color: #111827; font-size: 0.84rem; font-weight: 700; }
+    .status-block-detail { color: #6b7280; font-size: 0.76rem; margin-top: 0.28rem; line-height: 1.35; }
+    .status-pill { border-radius: 999px; padding: 0.15rem 0.45rem; font-size: 0.72rem; font-weight: 700; }
+    .status-success .status-pill { background: #ecfdf3; color: #15803d; }
+    .status-warn .status-pill { background: #fff7ed; color: #c2410c; }
+    .status-error .status-pill { background: #fef2f2; color: #b91c1c; }
+    .status-pending .status-pill { background: #f3f4f6; color: #4b5563; }
     h2, h3 { font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; font-weight: 600; color: #111827; }
     .app-section-head { display: flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0 0.75rem 0; }
     .app-section-icon { display: inline-flex; color: #1e40af; align-items: center; justify-content: center; }
     .app-section-icon svg { display: block; }
     .app-section-label { font-size: 1.05rem; font-weight: 600; color: #111827; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] {
-        height: 44px; background: #f3f4f6; border-radius: 6px 6px 0 0;
-        color: #374151; border: 1px solid #e5e7eb; border-bottom: none;
-    }
-    .stTabs [aria-selected="true"] {
-        background: #ffffff; color: #1e3a8a;
-        border-color: #e5e7eb; border-bottom: 2px solid #1e40af;
-    }
     .tutorial-step { display: flex; gap: 0.75rem; align-items: flex-start; margin: 0.6rem 0; padding: 0.5rem 0; border-bottom: 1px solid #e5e7eb; }
     .tutorial-step:last-child { border-bottom: none; }
     .tutorial-num {
@@ -703,7 +1066,48 @@ APP_CSS = """
         background-color: #1e40af !important; color: #ffffff !important; border: 1px solid #1e3a8a !important;
     }
     .stButton > button[kind="primary"]:hover { background-color: #1d4ed8 !important; }
-    [data-testid="stSidebar"] { background-color: #f9fafb; border-right: 1px solid #e5e7eb; }
+    [data-testid="stSidebar"] { background-color: #f8f9fb; border-right: 1px solid #dfe4ea; }
+    [data-testid="stSidebar"] > div:first-child { padding-top: 0.6rem; }
+    [data-testid="stSidebar"] .stButton { margin: 0; }
+    [data-testid="stSidebar"] [data-testid="column"] { padding-top: 0 !important; padding-bottom: 0 !important; }
+    [data-testid="stSidebar"] .stButton > button {
+        background: transparent !important;
+        border: 1px solid transparent !important;
+        color: #374151 !important;
+        border-radius: 6px !important;
+        min-height: 28px !important;
+        height: 28px !important;
+        padding: 0 8px !important;
+        justify-content: flex-start !important;
+        font-size: 0.84rem !important;
+        font-weight: 500 !important;
+        box-shadow: none !important;
+    }
+    [data-testid="stSidebar"] .stButton > button:hover {
+        background: rgba(0, 160, 233, 0.06) !important;
+        border-color: rgba(0, 160, 233, 0.08) !important;
+        color: #2563eb !important;
+    }
+    [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+        background: rgba(0, 160, 233, 0.08) !important;
+        border: 1px solid rgba(0, 160, 233, 0.14) !important;
+        color: #2563eb !important;
+        box-shadow: inset 2px 0 0 #2563eb !important;
+    }
+    [data-testid="stSidebar"] .stRadio label { font-size: 0.92rem; }
+    [data-testid="stSidebar"] .stRadio > div { gap: 0.25rem; }
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] > label {
+        background: #ffffff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 9px 10px;
+    }
+    [data-testid="stSidebar"] .stRadio [role="radiogroup"] > label:has(input:checked) {
+        background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border-color: #93c5fd;
+        box-shadow: inset 3px 0 0 #2563eb;
+    }
+    [data-testid="stSidebar"] [data-testid="column"] { align-self: start; }
+    div[data-testid="stMetric"] {
+        background: #ffffff; border: 1px solid #dfe4ea; border-radius: 14px; padding: 0.65rem 0.8rem;
+    }
+    .stDataFrame, .stTable { background: #ffffff; border-radius: 14px; }
 </style>
 """
 
@@ -758,8 +1162,91 @@ def init_services():
     }
 
 
+def _run_frontend_service_init(force: bool = False) -> Dict[str, Any]:
+    if force:
+        init_services.clear()
+    try:
+        os.environ["LLM_MODEL_GEN"] = _FIXED_LLM_MODEL
+        os.environ["LLM_MODEL_JUDGE"] = _FIXED_LLM_MODEL
+        os.environ["OPENAI_BASE_URL"] = _FIXED_LLM_BASE_URL
+        os.environ["OPENAI_API_KEY"] = _FIXED_LLM_API_KEY
+        services = init_services()
+        st.session_state.services = services
+        status = {
+            "status": "success",
+            "message": f"核心服务已就绪 (Gen/Judge: {_FIXED_LLM_MODEL})",
+            "checked_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    except Exception as e:
+        st.session_state.services = {}
+        status = {
+            "status": "error",
+            "message": f"初始化失败: {e}",
+            "checked_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    st.session_state.frontend_startup_status = status
+    return status
+
+
+def _auto_bootstrap_startup(force: bool = False) -> None:
+    should_run = force or not st.session_state.get("startup_bootstrap_done", False)
+    if not should_run:
+        return
+    st.session_state.backend_startup_status = _get_backend_startup_status()
+    _run_frontend_service_init(force=force)
+    st.session_state.startup_bootstrap_done = True
+
+
+def _ensure_frontend_services(force_retry: bool = False) -> bool:
+    if st.session_state.services.get("ingestor"):
+        return True
+    status = _run_frontend_service_init(force=force_retry)
+    return status.get("status") == "success" and bool(st.session_state.services.get("ingestor"))
+
+
+def _queue_widget_state_updates(updates: Dict[str, Any], message: str = "", level: str = "success") -> None:
+    pending = dict(st.session_state.get("_pending_widget_state_updates", {}))
+    pending.update({k: v for k, v in updates.items() if v is not None})
+    st.session_state["_pending_widget_state_updates"] = pending
+    if message:
+        st.session_state["_pending_widget_state_notice"] = {
+            "level": level,
+            "message": message,
+        }
+
+
+def _apply_pending_widget_state_updates() -> None:
+    pending = st.session_state.get("_pending_widget_state_updates", {})
+    if pending:
+        for key, value in pending.items():
+            st.session_state[key] = value
+        st.session_state["_pending_widget_state_updates"] = {}
+
+
+def _flush_pending_widget_state_notice() -> None:
+    notice = st.session_state.get("_pending_widget_state_notice")
+    if not notice:
+        return
+    level = notice.get("level", "info")
+    message = notice.get("message", "")
+    if message:
+        if level == "success":
+            st.success(message)
+        elif level == "warning":
+            st.warning(message)
+        elif level == "error":
+            st.error(message)
+        else:
+            st.info(message)
+    st.session_state["_pending_widget_state_notice"] = None
+
+
 def save_context() -> None:
     st.session_state.context.test_cases = _dedupe_project_cases(st.session_state.context.test_cases)
+    annotate_quality_characteristics(
+        st.session_state.context.requirements,
+        st.session_state.context.test_cases,
+    )
     st.session_state.req_count = len(st.session_state.context.requirements)
     st.session_state.case_count = len(st.session_state.context.test_cases)
     st.session_state.case_map = {}
@@ -818,6 +1305,13 @@ def _init_session() -> None:
             st.error(f"无法恢复历史项目数据: {e}")
             st.session_state.context = ProjectContext()
 
+        changed = annotate_quality_characteristics(
+            st.session_state.context.requirements,
+            st.session_state.context.test_cases,
+        )
+        if changed["requirements_changed"] or changed["test_cases_changed"]:
+            save_context()
+
     if "req_count" not in st.session_state:
         st.session_state.req_count = len(st.session_state.context.requirements)
     if "case_count" not in st.session_state:
@@ -829,6 +1323,25 @@ def _init_session() -> None:
 
     if "services" not in st.session_state:
         st.session_state.services = {}
+    if "frontend_startup_status" not in st.session_state:
+        st.session_state.frontend_startup_status = {
+            "status": "pending",
+            "message": "等待自动初始化",
+            "checked_at": "",
+        }
+    if "backend_startup_status" not in st.session_state:
+        st.session_state.backend_startup_status = {
+            "status": "pending",
+            "message": "等待后端启动自检",
+            "checked_at": "",
+            "steps": [],
+        }
+    if "startup_bootstrap_done" not in st.session_state:
+        st.session_state.startup_bootstrap_done = False
+    if "current_page" not in st.session_state:
+        st.session_state.current_page = "首页"
+    elif st.session_state.current_page == "使用说明":
+        st.session_state.current_page = "首页"
     _init_kg_candidate_state()
 
     batch_meta = _current_batch_meta()
@@ -853,91 +1366,74 @@ def _init_session() -> None:
         st.session_state.ai_eval_report = {}
     if "ai_eval_scope" not in st.session_state:
         st.session_state.ai_eval_scope = ""
+    if "_pending_widget_state_updates" not in st.session_state:
+        st.session_state["_pending_widget_state_updates"] = {}
+    if "_pending_widget_state_notice" not in st.session_state:
+        st.session_state["_pending_widget_state_notice"] = None
+    _load_sheet_export_settings()
 
 
 def render_sidebar() -> None:
-    st.markdown(_heading_html("连接与环境", "sliders"), unsafe_allow_html=True)
-    st.caption("V2")
-
-    with st.expander("🤖 模型协同配置", expanded=True):
-        st.caption("当前版本固定为本地 Ollama 运行；生成模型与判官模型均使用 `deepseek-r1:7b`。如需更换模型，请直接改代码。")
-        st.text_input("生成模型 (Gen)", value=_FIXED_LLM_MODEL, disabled=True)
-        st.text_input("判官模型 (Judge)", value=_FIXED_LLM_MODEL, disabled=True)
-        st.text_input("API Key", value=_FIXED_LLM_API_KEY, disabled=True)
-        st.text_input("Base URL", value=_FIXED_LLM_BASE_URL, disabled=True)
-        st.info("点击下方“初始化服务”时，会自动执行本地模型连接测试；通过后再完成服务初始化。")
-
-        st.session_state.model_gen = _FIXED_LLM_MODEL
-        st.session_state.model_judge = _FIXED_LLM_MODEL
-        st.session_state.openai_base_url = _FIXED_LLM_BASE_URL
-        st.session_state.openai_api_key = _FIXED_LLM_API_KEY
-
-    if st.button("初始化服务", use_container_width=True, type="primary"):
-        with st.spinner("正在测试本地模型并初始化服务…"):
-            try:
-                os.environ["LLM_MODEL_GEN"] = _FIXED_LLM_MODEL
-                os.environ["LLM_MODEL_JUDGE"] = _FIXED_LLM_MODEL
-                os.environ["OPENAI_BASE_URL"] = _FIXED_LLM_BASE_URL
-                os.environ["OPENAI_API_KEY"] = _FIXED_LLM_API_KEY
-                st.session_state.services = init_services()
-                st.success(f"核心服务已就绪 (Gen/Judge: {_FIXED_LLM_MODEL})")
-            except Exception as e:
-                st.error(f"初始化失败: {e}")
-
-    st.divider()
-    _render_heading("项目概览", "layout")
-    st.metric("需求条数", st.session_state.req_count)
-    st.metric("测试用例", len(_current_batch_cases()))
-    if st.session_state.current_generation_time:
-        st.caption(f"最近生成时间：{_format_dt(st.session_state.current_generation_time)}")
-
-    if st.button("清空项目数据", use_container_width=True, help="清空数据库中所有需求与用例"):
-        from src.data.database import get_session, Requirement, TestCase
-        from sqlmodel import delete
-        
-        try:
-            with get_session() as session:
-                session.exec(delete(Requirement))
-                session.exec(delete(TestCase))
-                session.commit()
-            
-            st.session_state.context = ProjectContext()
-            st.session_state.req_count = 0
-            st.session_state.case_count = 0
-            # Also backup JSON if exists
-            if os.path.exists(_PROJECT_CONTEXT_PATH):
-                os.rename(_PROJECT_CONTEXT_PATH, str(_PROJECT_CONTEXT_PATH) + ".bak")
-            
-            st.toast("数据库已清空")
-            st.rerun()
-        except Exception as e:
-            st.error(f"清空失败: {e}")
-
-def render_tab_guide() -> None:
-    _render_heading("使用说明", "book")
+    current = st.session_state.get("current_page", "首页")
+    if current == "使用说明":
+        st.session_state.current_page = "首页"
+        current = "首页"
     st.markdown(
         """
-        <div class="tutorial-step"><div class="tutorial-num">1</div><div class="tutorial-body">
-        在左侧边栏点击 <strong>初始化服务</strong>。当前版本固定使用本地 Ollama 的 <code>deepseek-r1:7b</code>，初始化时会自动执行模型连接测试；未完成初始化时无法解析文档或生成用例。
-        </div></div>
-        <div class="tutorial-step"><div class="tutorial-num">2</div><div class="tutorial-body">
-        打开 <strong>导入需求</strong>：上传 DOCX / XLSX / TXT / JSON / MD，执行「解析文档」。表格类内容通常置信度更高；长文档会按片段拆分。
-        </div></div>
-        <div class="tutorial-step"><div class="tutorial-num">3</div><div class="tutorial-body">
-        打开 <strong>评审与导出</strong>：对置信度低于 0.8 的条目补全模块、功能与正文，保存或「标记为就绪」。只有就绪需求会进入批量生成（可在单条上强制生成）。
-        </div></div>
-        <div class="tutorial-step"><div class="tutorial-num">4</div><div class="tutorial-body">
-        在 <strong>生成用例</strong> 中对就绪需求批量生成。生成会替换<strong>本次涉及需求</strong>的旧用例，其他需求的用例保留。
-        </div></div>
-        <div class="tutorial-step"><div class="tutorial-num">5</div><div class="tutorial-body">
-        回到 <strong>评审与导出</strong> 校对用例，下载 Excel / 飞书版 Excel / Postman，或配置飞书、TestLink 推送。
-        </div></div>
-        <div class="tutorial-note">
-        <strong>提示：</strong>侧边栏指标与本地 <code>data/project_context.json</code> 同步；LLM 缓存在 <code>data/llm_cache.json</code>。若结果异常，可先清空项目数据后重试。
+        <div class="sidebar-brand">
+            <div class="sidebar-brand-logo">W</div>
+            <div class="sidebar-brand-text">WHartTest</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    _render_nav_row("首页", "首页")
+
+    st.markdown(_menu_tree_group_html("AI测试用例生成", active=True), unsafe_allow_html=True)
+    nav_items = [
+        ("数据统计", "数据统计"),
+        ("导入需求", "导入需求"),
+        ("生成用例", "生成用例"),
+        ("评审与导出", "评审与导出"),
+        ("知识图谱", "知识图谱"),
+    ]
+    for label, page in nav_items:
+        _render_nav_row(label, page, indent=True)
+
+    st.markdown(_tool_item_html("UI自动化", muted=True), unsafe_allow_html=True)
+    st.markdown(_tool_item_html("接口测试设计", muted=True), unsafe_allow_html=True)
+    st.markdown(_tool_item_html("MCP / Skills", muted=True), unsafe_allow_html=True)
+
+def render_tab_guide() -> None:
+    st.session_state.current_page = "首页"
+    st.rerun()
+
+
+def render_tab_stats() -> None:
+    _render_heading("数据统计", "layout")
+    st.caption("该页面为只读统计视图，不提供任何编辑入口；“质量特性”分类结果已写回数据库，并用于后续导出。")
+
+    stats = build_statistics(
+        st.session_state.context.requirements,
+        st.session_state.context.test_cases,
+    )
+    overview = stats["overview"]
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("需求总数", overview["需求总数"])
+    s2.metric("用例总数", overview["用例总数"])
+    s3.metric("分类总数", overview["分类总数"])
+    s4.metric("已分类数据", overview["已分类需求数"] + overview["已分类用例数"])
+
+    st.markdown("### 分类汇总")
+    st.dataframe(pd.DataFrame(stats["category_summary"]), use_container_width=True, hide_index=True)
+
+    d1, d2 = st.columns(2)
+    with d1:
+        st.markdown("### 需求分类明细")
+        st.dataframe(pd.DataFrame(stats["requirement_rows"]), use_container_width=True, hide_index=True)
+    with d2:
+        st.markdown("### 用例分类明细")
+        st.dataframe(pd.DataFrame(stats["case_rows"]), use_container_width=True, hide_index=True)
 
     ready = sum(
         1
@@ -958,7 +1454,7 @@ def render_tab_guide() -> None:
         )
 
     if not st.session_state.services.get("ingestor"):
-        st.warning("尚未初始化服务，请从左侧边栏完成初始化。")
+        st.warning("模型服务暂未就绪；系统会在导入或生成时自动重试连接。")
     elif not st.session_state.context.requirements:
         st.info("下一步：在「导入需求」中上传并解析文档。")
     elif ready == 0:
@@ -967,6 +1463,103 @@ def render_tab_guide() -> None:
         st.info("下一步：在「生成用例」中执行批量生成。")
     else:
         st.success("可进行用例校对与导出。")
+
+
+def render_home_dashboard() -> None:
+    ctx = st.session_state.context
+    current_cases = _current_batch_cases()
+    stats = build_statistics(
+        st.session_state.context.requirements,
+        st.session_state.context.test_cases,
+    )
+    summary_rows = pd.DataFrame(stats["category_summary"]).sort_values(by=["用例数", "需求数"], ascending=False)
+    top_category = "—"
+    if not summary_rows.empty and int(summary_rows.iloc[0]["用例数"]) > 0:
+        top_category = str(summary_rows.iloc[0]["分类"])
+    avg_time = ctx.total_generation_time / ctx.total_requests if ctx.total_requests > 0 else 0
+    hit_rate = (ctx.kg_hit_count / ctx.total_requests * 100) if ctx.total_requests > 0 else 0
+    pass_rate = 0.0
+    if current_cases:
+        pass_count = sum(
+            1 for tc in current_cases
+            if _meta_to_dict(tc.system_env).get("execution_status") == "Pass"
+        )
+        pass_rate = pass_count / len(current_cases) * 100
+    fail_count = sum(
+        1 for tc in current_cases
+        if _meta_to_dict(tc.system_env).get("execution_status") == "Fail"
+    )
+    pass_count = sum(
+        1 for tc in current_cases
+        if _meta_to_dict(tc.system_env).get("execution_status") == "Pass"
+    )
+    nt_count = max(len(current_cases) - pass_count - fail_count, 0) if current_cases else 0
+    latest_req_rows = pd.DataFrame(stats["requirement_rows"]).head(8)
+    latest_case_rows = pd.DataFrame(stats["case_rows"]).head(8)
+    category_chart = summary_rows[["分类", "用例数"]].set_index("分类") if not summary_rows.empty else pd.DataFrame(columns=["用例数"])
+    trend_rows: List[Dict[str, Any]] = []
+    for tc in st.session_state.context.test_cases:
+        generated_at = _meta_to_dict(tc.system_env).get("generated_at", "")
+        if generated_at:
+            trend_rows.append({
+                "日期": str(generated_at)[:10],
+                "数量": 1,
+            })
+    trend_df = pd.DataFrame(trend_rows)
+    if not trend_df.empty:
+        trend_df = trend_df.groupby("日期", as_index=False)["数量"].sum().sort_values("日期")
+    token_rows = pd.DataFrame([
+        {"指标": "累计请求数", "值": ctx.total_requests},
+        {"指标": "累计 Tokens", "值": ctx.total_tokens},
+        {"指标": "最近生成时间", "值": _format_dt(st.session_state.current_generation_time)},
+        {"指标": "当前批次文件", "值": ", ".join(st.session_state.get("current_upload_files", [])) or "—"},
+    ])
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(_dashboard_card("功能用例", str(len(current_cases)), f"通过 {pass_count} · 待处理 {fail_count + nt_count}", "green"), unsafe_allow_html=True)
+    with c2:
+        st.markdown(_dashboard_card("AI测试用例生成", str(st.session_state.req_count), f"就绪 {sum(1 for r in st.session_state.context.requirements if _get_conf(r.ingestion_metadata) >= 0.8)} · 主类 {top_category}", "blue"), unsafe_allow_html=True)
+    with c3:
+        st.markdown(_dashboard_card("执行统计", str(len(current_cases)), f"通过 {pass_count} · 失败 {fail_count}", "orange"), unsafe_allow_html=True)
+    with c4:
+        st.markdown(_dashboard_card("MCP / Skills", str(0), "MCP 0/0 · Skills 0/0", "purple"), unsafe_allow_html=True)
+
+    p1, p2, p3 = st.columns([1.4, 0.9, 1.2])
+    with p1:
+        st.markdown('<div class="dashboard-panel"><div class="dashboard-panel-title">用例审核状态</div>', unsafe_allow_html=True)
+        st.dataframe(summary_rows, use_container_width=True, hide_index=True)
+        total_exec = max(len(current_cases), 1)
+        st.progress(min(pass_count / total_exec, 1.0), text=f"已通过 {(pass_count / total_exec * 100):.0f}%")
+        st.progress(min(fail_count / total_exec, 1.0), text=f"待处理 {(fail_count / total_exec * 100):.0f}%")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with p2:
+        st.markdown('<div class="dashboard-panel"><div class="dashboard-panel-title">执行通过率</div>', unsafe_allow_html=True)
+        st.markdown(_rate_ring_html(pass_rate, pass_count, fail_count, nt_count), unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+    with p3:
+        st.markdown('<div class="dashboard-panel"><div class="dashboard-panel-title">Token 统计</div>', unsafe_allow_html=True)
+        st.dataframe(token_rows, use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    d1, d2 = st.columns([1.5, 1])
+    with d1:
+        st.markdown('<div class="dashboard-panel"><div class="dashboard-panel-title">近7天执行趋势</div>', unsafe_allow_html=True)
+        if not trend_df.empty:
+            st.bar_chart(trend_df.set_index("日期"))
+        else:
+            st.info("暂无可展示的生成趋势数据。")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with d2:
+        st.markdown('<div class="dashboard-panel"><div class="dashboard-panel-title">质量特性分布 / 最近数据</div>', unsafe_allow_html=True)
+        if not category_chart.empty:
+            st.bar_chart(category_chart)
+        detail_scope = st.radio("明细视图", ["需求", "用例"], horizontal=True, key="home_detail_scope")
+        if detail_scope == "需求":
+            st.dataframe(latest_req_rows, use_container_width=True, hide_index=True)
+        else:
+            st.dataframe(latest_case_rows, use_container_width=True, hide_index=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_tab_import() -> None:
@@ -983,8 +1576,11 @@ def render_tab_import() -> None:
         )
     with col_b:
         st.markdown("<br>", unsafe_allow_html=True)
-        can_run = bool(uploaded_files and st.session_state.services.get("ingestor"))
+        can_run = bool(uploaded_files)
         if st.button("解析文档", type="primary", use_container_width=True, disabled=not can_run):
+            if not _ensure_frontend_services(force_retry=True):
+                st.error("模型服务初始化失败，请检查本地 Ollama 与 deepseek-r1:7b 是否可用。")
+                return
             temp_path = _PROJECT_ROOT / "temp_upload"
             temp_path.mkdir(exist_ok=True)
             all_reqs = []
@@ -1034,8 +1630,8 @@ def render_tab_import() -> None:
             elif ingest_errors:
                 st.error("全部文件解析失败，需求列表未更改。")
             progress_text.empty()
-        elif not st.session_state.services.get("ingestor"):
-            st.info("请先在侧栏初始化服务。")
+        elif uploaded_files and not st.session_state.services.get("ingestor"):
+            st.info("正在等待模型服务就绪，点击“解析文档”时会自动重试初始化。")
 
     if not st.session_state.context.requirements:
         return
@@ -1182,6 +1778,9 @@ def render_tab_generate() -> None:
     if not start:
         return
 
+    if not st.session_state.services.get("ingestor"):
+        _ensure_frontend_services(force_retry=True)
+
     backend_online, backend_err = _check_backend()
 
     if not backend_online:
@@ -1249,7 +1848,7 @@ def render_tab_generate() -> None:
                             p["status"].write(st_text)
                             
                             if st_text == "已完成":
-                                p["node"].markdown("✅ :green[完成]")
+                                p["node"].markdown("OK :green[完成]")
                                 if req_id:
                                     done_req_ids.add(req_id)
                         
@@ -1333,6 +1932,8 @@ def render_tab_generate() -> None:
 
 
 def render_tab_review_export() -> None:
+    _apply_pending_widget_state_updates()
+    _flush_pending_widget_state_notice()
     _render_heading("评审与导出", "package")
     if not st.session_state.context.requirements:
         st.info("请先在「导入需求」中解析文档。")
@@ -1524,7 +2125,7 @@ def render_tab_review_export() -> None:
                 
                 if all_history:
                     st.divider()
-                    st.markdown(f"📊 **反馈沉淀** (累计 {len(all_history)} 条修正记录)")
+                    st.markdown(f"**反馈沉淀** (累计 {len(all_history)} 条修正记录)")
                     if st.button("从历史修正中提取规则", key=f"learn_history_{selected_req_id}", use_container_width=True):
                         module = _get_entity(selected_req.extracted_entities, "module", "Unknown")
                         with st.spinner("正在从历史修正中精炼业务规则..."):
@@ -1774,10 +2375,12 @@ def render_tab_review_export() -> None:
     all_cases = st.session_state.context.test_cases
     cases = _current_batch_cases()
     deduped_cases = _dedupe_project_cases(cases)
+    _backfill_case_project_names(all_cases, st.session_state.context.requirements)
     dup_count = max(0, len(cases) - len(deduped_cases))
     batch_meta = _current_batch_meta()
     req_meta = {
         r.id: {
+            "project_name": _get_requirement_project_name(r) or "—",
             "module": _get_entity(r.extracted_entities, "module", "—"),
             "feature": _get_entity(r.extracted_entities, "feature", "—"),
         }
@@ -1935,13 +2538,7 @@ def render_tab_review_export() -> None:
         else:
             st.button("Pytest 脚本", disabled=True, use_container_width=True)
     with e5:
-        feishu_target = st.selectbox(
-            "飞书目标",
-            ["Bitable", "Sheet", "云文档"],
-            key="feishu_target_type",
-            label_visibility="collapsed",
-        )
-        if st.button("推送到飞书", use_container_width=True, disabled=not cases):
+        if st.button("推送到飞书Sheet", use_container_width=True, disabled=not cases):
             Exporter = get_test_case_exporter()
             exporter = Exporter(
                 cases,
@@ -1950,125 +2547,104 @@ def render_tab_review_export() -> None:
             client = get_feishu_client(
                 app_id=st.session_state.get("feishu_app_id", ""),
                 app_secret=st.session_state.get("feishu_app_secret", ""),
-                app_token=st.session_state.get("feishu_app_token", ""),
-                table_id=st.session_state.get("feishu_table_id", ""),
                 spreadsheet_token=st.session_state.get("feishu_spreadsheet_token", ""),
                 sheet_id=st.session_state.get("feishu_sheet_id", ""),
-                document_id=st.session_state.get("feishu_document_id", ""),
                 tenant_access_token=st.session_state.get("feishu_tenant_token", ""),
                 base_url=st.session_state.get("feishu_open_base_url", "https://open.feishu.cn"),
             )
-            if feishu_target == "Bitable":
-                if not st.session_state.get("feishu_app_token") or not st.session_state.get("feishu_table_id"):
-                    st.warning("请先填写 Bitable 的 App Token 和 Table ID。")
+            spreadsheet_token = st.session_state.get("feishu_spreadsheet_token", "")
+            sheet_id = st.session_state.get("feishu_sheet_id", "")
+            if not spreadsheet_token and st.session_state.get("feishu_auto_create_sheet", True):
+                created = client.create_spreadsheet(
+                    st.session_state.get("feishu_sheet_title", f"AI测试用例_{ts}"),
+                    folder_token=st.session_state.get("feishu_sheet_folder_token", ""),
+                )
+                if created and created.get("spreadsheet_token"):
+                    spreadsheet_token = created.get("spreadsheet_token", "")
+                    sheet_id = created.get("sheet_id", "")
+                    sheet_url = _build_feishu_sheet_url(spreadsheet_token, sheet_id)
+                    updates = {
+                        "feishu_spreadsheet_token": spreadsheet_token,
+                        "feishu_sheet_id": sheet_id,
+                        "feishu_last_sheet_url": sheet_url,
+                    }
+                    _queue_widget_state_updates(updates, f"已自动创建新 Sheet：{spreadsheet_token}")
+                    st.rerun()
                 else:
-                    expected_fields = exporter.feishu_field_names()
-                    actual_fields = client.get_bitable_field_names(
-                        app_token=st.session_state.get("feishu_app_token", ""),
-                        table_id=st.session_state.get("feishu_table_id", ""),
-                    )
-                    compare = client.compare_headers(expected_fields, actual_fields) if actual_fields else {"missing": [], "extra": [], "matched": []}
-                    if actual_fields and compare["missing"]:
-                        st.warning("Bitable 字段不匹配，缺少列：" + "、".join(compare["missing"]))
-                    elif actual_fields:
-                        st.info("Bitable 字段校验通过。")
-                    if actual_fields and compare["missing"] and st.session_state.get("feishu_auto_create_bitable_fields", True):
-                        created = client.create_bitable_fields(
-                            compare["missing"],
-                            app_token=st.session_state.get("feishu_app_token", ""),
-                            table_id=st.session_state.get("feishu_table_id", ""),
-                            option_values=exporter.feishu_single_select_options(),
-                        )
-                        if created["created"]:
-                            st.info("已自动创建 Bitable 列：" + "、".join(created["created"]))
-                        if created["failed"]:
-                            st.warning("以下列创建失败：" + "、".join(created["failed"]))
-                        actual_fields = client.get_bitable_field_names(
-                            app_token=st.session_state.get("feishu_app_token", ""),
-                            table_id=st.session_state.get("feishu_table_id", ""),
-                        )
-                        compare = client.compare_headers(expected_fields, actual_fields) if actual_fields else {"missing": [], "extra": [], "matched": []}
-                    records = {"records": exporter.to_feishu_records()}
-                    if actual_fields and compare["missing"]:
-                        st.warning("请先补齐 Bitable 列名后再推送。")
-                    elif client.push_records(records):
-                        st.success(f"已成功推送 {len(records['records'])} 条记录到飞书 Bitable。")
-                    else:
-                        st.warning("推送失败，请检查飞书应用权限、Bitable 权限和字段名是否匹配。")
-            elif feishu_target == "Sheet":
-                spreadsheet_token = st.session_state.get("feishu_spreadsheet_token", "")
-                sheet_id = st.session_state.get("feishu_sheet_id", "")
-                if not spreadsheet_token and st.session_state.get("feishu_auto_create_sheet", True):
-                    created = client.create_spreadsheet(
-                        st.session_state.get("feishu_sheet_title", f"AI测试用例_{ts}"),
-                        folder_token=st.session_state.get("feishu_sheet_folder_token", ""),
-                    )
-                    if created and created.get("spreadsheet_token"):
-                        spreadsheet_token = created.get("spreadsheet_token", "")
-                        sheet_id = created.get("sheet_id", "")
-                        st.session_state["feishu_spreadsheet_token"] = spreadsheet_token
-                        if sheet_id:
-                            st.session_state["feishu_sheet_id"] = sheet_id
-                        st.info(f"已自动创建新 Sheet：{spreadsheet_token}")
-                    else:
-                        st.warning("自动创建新 Sheet 失败，请检查权限或文件夹配置。")
-                if not spreadsheet_token:
-                    st.warning("请先填写 Spreadsheet Token，或启用自动创建新 Sheet。")
-                else:
-                    values = exporter.to_sheet_values()
-                    actual_headers = client.get_sheet_headers(
-                        spreadsheet_token=spreadsheet_token,
-                        sheet_id=sheet_id or st.session_state.get("feishu_sheet_id", ""),
-                    )
-                    expected_headers = exporter.local_sheet_headers()
-                    compare = client.compare_headers(expected_headers, actual_headers) if actual_headers else {"missing": [], "extra": [], "matched": []}
-                    if actual_headers:
-                        if compare["missing"] or compare["extra"]:
-                            st.warning(
-                                "Sheet 表头检查：缺少列 "
-                                + ("、".join(compare["missing"]) if compare["missing"] else "无")
-                                + "；额外列 "
-                                + ("、".join(compare["extra"]) if compare["extra"] else "无")
-                            )
-                        else:
-                            st.info("Sheet 表头校验通过。")
-                    if client.push_sheet_values(
-                        values,
-                        spreadsheet_token=spreadsheet_token,
-                        sheet_id=sheet_id or st.session_state.get("feishu_sheet_id", ""),
-                        start_cell=st.session_state.get("feishu_sheet_start_cell", "A1"),
-                    ):
-                        st.success(f"已成功推送 {max(len(values) - 1, 0)} 条记录到飞书 Sheet。")
-                    else:
-                        st.warning("推送失败，请检查电子表格权限、Spreadsheet Token、Sheet ID 和写入范围。")
+                    st.warning("自动创建新 Sheet 失败，请检查权限或文件夹配置。")
+            if not spreadsheet_token:
+                st.warning("请先填写 Spreadsheet Token，或启用自动创建新 Sheet。")
             else:
-                doc_title = st.session_state.get("feishu_doc_title", f"AI测试用例_{ts}")
-                if client.push_doc_sections(
-                    exporter.to_doc_sections(),
-                    title=doc_title,
-                    document_id=st.session_state.get("feishu_document_id", ""),
-                    folder_token=st.session_state.get("feishu_doc_folder_token", ""),
-                ):
-                    st.success("已成功推送到飞书云文档。")
+                values = exporter.to_sheet_values()
+                actual_headers = client.get_sheet_headers(
+                    spreadsheet_token=spreadsheet_token,
+                    sheet_id=sheet_id or st.session_state.get("feishu_sheet_id", ""),
+                )
+                expected_headers = exporter.local_sheet_headers()
+                compare = client.compare_headers(expected_headers, actual_headers) if actual_headers else {"missing": [], "extra": [], "matched": []}
+                if actual_headers:
+                    if compare["missing"] or compare["extra"]:
+                        st.warning(
+                            "Sheet 表头检查：缺少列 "
+                            + ("、".join(compare["missing"]) if compare["missing"] else "无")
+                            + "；额外列 "
+                            + ("、".join(compare["extra"]) if compare["extra"] else "无")
+                        )
+                    else:
+                        st.info("Sheet 表头校验通过。")
                 else:
-                    st.warning("推送失败，请检查云文档权限、Document ID 或 Folder Token。")
+                    st.info("Sheet 首行为空，将直接写入新的表头和数据。")
+                target_sheet_id = sheet_id or st.session_state.get("feishu_sheet_id", "")
+                pushed = client.push_sheet_values(
+                    values,
+                    spreadsheet_token=spreadsheet_token,
+                    sheet_id=target_sheet_id,
+                    start_cell=st.session_state.get("feishu_sheet_start_cell", "A1"),
+                )
+                if not pushed:
+                    detected_sheet_id = client.detect_sheet_id(spreadsheet_token)
+                    if detected_sheet_id and detected_sheet_id != target_sheet_id:
+                        target_sheet_id = detected_sheet_id
+                        pushed = client.push_sheet_values(
+                            values,
+                            spreadsheet_token=spreadsheet_token,
+                            sheet_id=target_sheet_id,
+                            start_cell=st.session_state.get("feishu_sheet_start_cell", "A1"),
+                        )
+                        if pushed:
+                            st.session_state["feishu_sheet_id"] = target_sheet_id
+                if pushed:
+                    sheet_url = _build_feishu_sheet_url(spreadsheet_token, target_sheet_id)
+                    st.session_state["feishu_last_sheet_url"] = sheet_url
+                    _save_sheet_export_settings()
+                    st.success(f"已成功推送 {max(len(values) - 1, 0)} 条记录到飞书 Sheet。")
+                else:
+                    detail = client.last_error or "请检查电子表格权限、Spreadsheet Token、Sheet ID 和写入范围。"
+                    st.warning(f"推送失败：{detail}")
 
     with st.expander("飞书配置", expanded=False):
-        st.caption("推荐使用自建应用 `App ID + App Secret` 自动换取 tenant_access_token；也支持直接填现成 token。")
-        shared_url = st.text_input("飞书分享链接（可选）", key="feishu_shared_url", help="支持粘贴 Bitable / Sheet / 云文档 链接，用于自动提取 token")
+        if not st.session_state.get("feishu_sheet_title"):
+            st.session_state["feishu_sheet_title"] = f"AI测试用例_{ts}"
+        if not st.session_state.get("feishu_sheet_start_cell"):
+            st.session_state["feishu_sheet_start_cell"] = "A1"
+        st.caption("仅保留飞书 Sheet 导出；支持自建应用 `App ID + App Secret` 自动换取 tenant_access_token。")
+        shared_url = st.text_input("飞书 Sheet 分享链接（可选）", key="feishu_shared_url", help="支持粘贴 Sheet 链接，用于自动提取 Spreadsheet Token 和 Sheet ID")
         u1, u2 = st.columns(2)
         if u1.button("从链接提取 Token", use_container_width=True, disabled=not (shared_url or "").strip()):
             parsed = _extract_feishu_tokens(shared_url)
+            updates = {}
             if parsed.get("spreadsheet_token"):
-                st.session_state["feishu_spreadsheet_token"] = parsed["spreadsheet_token"]
+                updates["feishu_spreadsheet_token"] = parsed["spreadsheet_token"]
             if parsed.get("sheet_id"):
-                st.session_state["feishu_sheet_id"] = parsed["sheet_id"]
-            if parsed.get("document_id"):
-                st.session_state["feishu_document_id"] = parsed["document_id"]
-            if parsed.get("app_token"):
-                st.session_state["feishu_app_token"] = parsed["app_token"]
-            st.success("已自动提取可识别的 Token。")
-            st.rerun()
+                updates["feishu_sheet_id"] = parsed["sheet_id"]
+            if updates:
+                updates["feishu_last_sheet_url"] = _build_feishu_sheet_url(
+                    updates.get("feishu_spreadsheet_token", st.session_state.get("feishu_spreadsheet_token", "")),
+                    updates.get("feishu_sheet_id", st.session_state.get("feishu_sheet_id", "")),
+                )
+                _queue_widget_state_updates(updates, "已自动提取可识别的 Token。")
+                st.rerun()
+            st.info("未从链接中识别到可用 Token。")
         if u2.button("自动探测首个 Sheet ID", use_container_width=True, disabled=not st.session_state.get("feishu_spreadsheet_token")):
             try:
                 client = get_feishu_client(
@@ -2080,8 +2656,16 @@ def render_tab_review_export() -> None:
                 )
                 sheet_id = client.detect_sheet_id(st.session_state.get("feishu_spreadsheet_token", ""))
                 if sheet_id:
-                    st.session_state["feishu_sheet_id"] = sheet_id
-                    st.success(f"已探测到 Sheet ID：{sheet_id}")
+                    _queue_widget_state_updates(
+                        {
+                            "feishu_sheet_id": sheet_id,
+                            "feishu_last_sheet_url": _build_feishu_sheet_url(
+                                st.session_state.get("feishu_spreadsheet_token", ""),
+                                sheet_id,
+                            ),
+                        },
+                        f"已探测到 Sheet ID：{sheet_id}",
+                    )
                     st.rerun()
                 else:
                     st.warning("未能自动探测到 Sheet ID，请从链接中的 ?sheet= 参数手工填写。")
@@ -2089,140 +2673,86 @@ def render_tab_review_export() -> None:
                 st.error(f"探测失败: {e}")
         g1, g2 = st.columns(2)
         with g1:
-            st.text_input("App ID", value=os.getenv("FEISHU_APP_ID", ""), key="feishu_app_id")
-            st.text_input("Tenant Access Token", value=os.getenv("FEISHU_TENANT_TOKEN", ""), key="feishu_tenant_token", type="password", help="可选；若不填则自动使用 App ID + App Secret 换取")
+            st.text_input("App ID", key="feishu_app_id")
+            st.text_input("Tenant Access Token", key="feishu_tenant_token", type="password", help="可选；若不填则自动使用 App ID + App Secret 换取")
         with g2:
-            st.text_input("App Secret", value=os.getenv("FEISHU_APP_SECRET", ""), key="feishu_app_secret", type="password")
-            st.text_input("Open API Base URL", value=os.getenv("FEISHU_OPEN_BASE_URL", "https://open.feishu.cn"), key="feishu_open_base_url")
+            st.text_input("App Secret", key="feishu_app_secret", type="password")
+            st.text_input("Open API Base URL", key="feishu_open_base_url")
         st.text_input(
             "需求链接前缀/模板（可选）",
-            value=os.getenv("FEISHU_REQUIREMENT_LINK_BASE_URL", ""),
             key="feishu_requirement_link_base_url",
             help="可填前缀如 http://localhost:8504/req/ 或模板如 https://example.com/req/{req_id}",
         )
-
-        tab_bitable, tab_sheet, tab_doc = st.tabs(["Bitable", "Sheet", "云文档"])
-        with tab_bitable:
-            b1, b2 = st.columns(2)
-            with b1:
-                st.text_input("App Token", value=os.getenv("FEISHU_APP_TOKEN", ""), key="feishu_app_token", help="多维表格 app_token")
-            with b2:
-                st.text_input("Table ID", value=os.getenv("FEISHU_TABLE_ID", ""), key="feishu_table_id", help="多维表格数据表 table_id")
-            st.checkbox("缺列时自动创建 Bitable 字段", value=True, key="feishu_auto_create_bitable_fields")
-            if st.button("自动补齐 Bitable 缺失列", key="create_bitable_fields_btn", use_container_width=True, disabled=not (st.session_state.get("feishu_app_token") and st.session_state.get("feishu_table_id"))):
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            st.text_input("Spreadsheet Token", key="feishu_spreadsheet_token")
+        with s2:
+            st.text_input("Sheet ID", key="feishu_sheet_id", help="例如 URL 参数里的 ?sheet=xxx")
+        with s3:
+            st.text_input("起始单元格", key="feishu_sheet_start_cell")
+        s4, s5 = st.columns(2)
+        with s4:
+            st.checkbox("缺失时自动创建新 Sheet", key="feishu_auto_create_sheet")
+            st.text_input("新 Sheet 标题", key="feishu_sheet_title")
+        with s5:
+            st.text_input("Sheet Folder Token", key="feishu_sheet_folder_token", help="自动创建电子表格时可选")
+            if st.button("创建新的 Sheet 并回填 Token", key="create_new_sheet_btn", use_container_width=True):
                 try:
                     client = get_feishu_client(
                         app_id=st.session_state.get("feishu_app_id", ""),
                         app_secret=st.session_state.get("feishu_app_secret", ""),
-                        app_token=st.session_state.get("feishu_app_token", ""),
-                        table_id=st.session_state.get("feishu_table_id", ""),
                         tenant_access_token=st.session_state.get("feishu_tenant_token", ""),
                         base_url=st.session_state.get("feishu_open_base_url", "https://open.feishu.cn"),
                     )
-                    Exporter = get_test_case_exporter()
-                    expected = Exporter(cases).feishu_field_names() if cases else []
-                    actual = client.get_bitable_field_names()
-                    compare = client.compare_headers(expected, actual)
-                    if not compare["missing"]:
-                        st.success("Bitable 列已齐全，无需补齐。")
-                    else:
-                        created = client.create_bitable_fields(
-                            compare["missing"],
-                            option_values=Exporter(cases).feishu_single_select_options() if cases else {},
-                        )
-                        if created["created"]:
-                            st.success("已创建列：" + "、".join(created["created"]))
-                        if created["failed"]:
-                            st.warning("创建失败：" + "、".join(created["failed"]))
-                except Exception as e:
-                    st.error(f"补齐失败: {e}")
-            if st.button("检查 Bitable 列名匹配", key="check_bitable_headers", use_container_width=True, disabled=not (st.session_state.get("feishu_app_token") and st.session_state.get("feishu_table_id"))):
-                try:
-                    client = get_feishu_client(
-                        app_id=st.session_state.get("feishu_app_id", ""),
-                        app_secret=st.session_state.get("feishu_app_secret", ""),
-                        app_token=st.session_state.get("feishu_app_token", ""),
-                        table_id=st.session_state.get("feishu_table_id", ""),
-                        tenant_access_token=st.session_state.get("feishu_tenant_token", ""),
-                        base_url=st.session_state.get("feishu_open_base_url", "https://open.feishu.cn"),
+                    created = client.create_spreadsheet(
+                        st.session_state.get("feishu_sheet_title", f"AI测试用例_{ts}"),
+                        folder_token=st.session_state.get("feishu_sheet_folder_token", ""),
                     )
-                    Exporter = get_test_case_exporter()
-                    expected = Exporter(cases).feishu_field_names() if cases else []
-                    actual = client.get_bitable_field_names()
-                    compare = client.compare_headers(expected, actual)
-                    if compare["missing"] or compare["extra"]:
-                        st.warning(f"缺少列：{'、'.join(compare['missing']) or '无'}；额外列：{'、'.join(compare['extra']) or '无'}")
-                    else:
-                        st.success("Bitable 列名匹配。")
-                except Exception as e:
-                    st.error(f"检查失败: {e}")
-            st.caption("字段名仅写入：测试用例 ID、需求对应、优先级、前提条件、测试目的描述、测试步骤概述、期望结果、实测结果、Pass/ Fail/NT。自动建列时会优先把“优先级/Pass/ Fail/NT”建成单选列，步骤/期望/实测字段按长文本用途创建说明，其余默认文本列。")
-
-        with tab_sheet:
-            s1, s2, s3 = st.columns(3)
-            with s1:
-                st.text_input("Spreadsheet Token", value=os.getenv("FEISHU_SPREADSHEET_TOKEN", ""), key="feishu_spreadsheet_token")
-            with s2:
-                st.text_input("Sheet ID", value=os.getenv("FEISHU_SHEET_ID", ""), key="feishu_sheet_id", help="例如 URL 参数里的 ?sheet=xxx")
-            with s3:
-                st.text_input("起始单元格", value=os.getenv("FEISHU_SHEET_START_CELL", "A1"), key="feishu_sheet_start_cell")
-            s4, s5 = st.columns(2)
-            with s4:
-                st.checkbox("缺失时自动创建新 Sheet", value=True, key="feishu_auto_create_sheet")
-                st.text_input("新 Sheet 标题", value=f"AI测试用例_{ts}", key="feishu_sheet_title")
-            with s5:
-                st.text_input("Sheet Folder Token", value=os.getenv("FEISHU_SHEET_FOLDER_TOKEN", ""), key="feishu_sheet_folder_token", help="自动创建电子表格时可选")
-                if st.button("创建新的 Sheet 并回填 Token", key="create_new_sheet_btn", use_container_width=True):
-                    try:
-                        client = get_feishu_client(
-                            app_id=st.session_state.get("feishu_app_id", ""),
-                            app_secret=st.session_state.get("feishu_app_secret", ""),
-                            tenant_access_token=st.session_state.get("feishu_tenant_token", ""),
-                            base_url=st.session_state.get("feishu_open_base_url", "https://open.feishu.cn"),
+                    if created and created.get("spreadsheet_token"):
+                        token = created.get("spreadsheet_token", "")
+                        sid = created.get("sheet_id", "")
+                        _queue_widget_state_updates(
+                            {
+                                "feishu_spreadsheet_token": token,
+                                "feishu_sheet_id": sid,
+                                "feishu_last_sheet_url": _build_feishu_sheet_url(token, sid),
+                            },
+                            "已创建新的 Sheet 并回填 Token。",
                         )
-                        created = client.create_spreadsheet(
-                            st.session_state.get("feishu_sheet_title", f"AI测试用例_{ts}"),
-                            folder_token=st.session_state.get("feishu_sheet_folder_token", ""),
-                        )
-                        if created and created.get("spreadsheet_token"):
-                            st.session_state["feishu_spreadsheet_token"] = created.get("spreadsheet_token", "")
-                            st.session_state["feishu_sheet_id"] = created.get("sheet_id", "")
-                            st.success("已创建新的 Sheet 并回填 Token。")
-                            st.rerun()
-                        else:
-                            st.warning("创建失败，请检查应用权限和文件夹权限。")
-                    except Exception as e:
-                        st.error(f"创建失败: {e}")
-            if st.button("检查 Sheet 表头匹配", key="check_sheet_headers", use_container_width=True, disabled=not st.session_state.get("feishu_spreadsheet_token")):
-                try:
-                    client = get_feishu_client(
-                        app_id=st.session_state.get("feishu_app_id", ""),
-                        app_secret=st.session_state.get("feishu_app_secret", ""),
-                        spreadsheet_token=st.session_state.get("feishu_spreadsheet_token", ""),
-                        sheet_id=st.session_state.get("feishu_sheet_id", ""),
-                        tenant_access_token=st.session_state.get("feishu_tenant_token", ""),
-                        base_url=st.session_state.get("feishu_open_base_url", "https://open.feishu.cn"),
-                    )
-                    Exporter = get_test_case_exporter()
-                    expected = Exporter(cases).local_sheet_headers() if cases else []
-                    actual = client.get_sheet_headers()
-                    compare = client.compare_headers(expected, actual)
-                    if compare["missing"] or compare["extra"]:
-                        st.warning(f"缺少列：{'、'.join(compare['missing']) or '无'}；额外列：{'、'.join(compare['extra']) or '无'}")
+                        st.rerun()
                     else:
-                        st.success("Sheet 表头匹配。")
+                        st.warning("创建失败，请检查应用权限和文件夹权限。")
                 except Exception as e:
-                    st.error(f"检查失败: {e}")
-            st.caption("当前实现会直接覆盖指定范围数据，默认把表头写到起始单元格；若未填写 Token，可自动创建新的电子表格。")
-
-        with tab_doc:
-            d1, d2 = st.columns(2)
-            with d1:
-                st.text_input("Document ID", value=os.getenv("FEISHU_DOCUMENT_ID", ""), key="feishu_document_id", help="已存在文档则填它；不填则自动创建")
-                st.text_input("文档标题", value=f"AI测试用例_{ts}", key="feishu_doc_title")
-            with d2:
-                st.text_input("Folder Token", value=os.getenv("FEISHU_DOC_FOLDER_TOKEN", ""), key="feishu_doc_folder_token", help="创建新文档时可选")
-            st.caption("当前实现会把导出内容按标题 / 有序列表 / 段落写成新版云文档块；若填写现有 Document ID，则直接写入该文档首页。")
+                    st.error(f"创建失败: {e}")
+        if st.button("检查 Sheet 表头匹配", key="check_sheet_headers", use_container_width=True, disabled=not st.session_state.get("feishu_spreadsheet_token")):
+            try:
+                client = get_feishu_client(
+                    app_id=st.session_state.get("feishu_app_id", ""),
+                    app_secret=st.session_state.get("feishu_app_secret", ""),
+                    spreadsheet_token=st.session_state.get("feishu_spreadsheet_token", ""),
+                    sheet_id=st.session_state.get("feishu_sheet_id", ""),
+                    tenant_access_token=st.session_state.get("feishu_tenant_token", ""),
+                    base_url=st.session_state.get("feishu_open_base_url", "https://open.feishu.cn"),
+                )
+                Exporter = get_test_case_exporter()
+                expected = Exporter(cases).local_sheet_headers() if cases else []
+                actual = client.get_sheet_headers()
+                compare = client.compare_headers(expected, actual)
+                if compare["missing"] or compare["extra"]:
+                    st.warning(f"缺少列：{'、'.join(compare['missing']) or '无'}；额外列：{'、'.join(compare['extra']) or '无'}")
+                else:
+                    st.success("Sheet 表头匹配。")
+            except Exception as e:
+                st.error(f"检查失败: {e}")
+        sheet_url = st.session_state.get("feishu_last_sheet_url", "") or _build_feishu_sheet_url(
+            st.session_state.get("feishu_spreadsheet_token", ""),
+            st.session_state.get("feishu_sheet_id", ""),
+        )
+        if sheet_url:
+            st.text_input("表格链接", value=sheet_url, disabled=True)
+            st.markdown(f"[打开当前 Sheet]({sheet_url})")
+        st.caption("当前实现会直接覆盖指定范围数据，默认把表头写到起始单元格；若未填写 Token，可自动创建新的电子表格。")
+        _save_sheet_export_settings()
 
     st.divider()
     st.markdown(_heading_html("TestLink", "link"), unsafe_allow_html=True)
@@ -2498,7 +3028,7 @@ def render_tab_kg_browser() -> None:
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown(f"### 📋 业务规则 ({len(selected_mod['rules'])})")
+            st.markdown(f"### 业务规则 ({len(selected_mod['rules'])})")
             if selected_mod["rules"]:
                 for rule in selected_mod["rules"]:
                     st.info(rule)
@@ -2506,7 +3036,7 @@ def render_tab_kg_browser() -> None:
                 st.caption("暂无显式规则。")
                 
         with col2:
-            st.markdown(f"### 🧪 测试场景 ({len(selected_mod['scenarios'])})")
+            st.markdown(f"### 测试场景 ({len(selected_mod['scenarios'])})")
             if selected_mod["scenarios"]:
                 for sce in selected_mod["scenarios"]:
                     with st.expander(f"{sce['type']}: {sce['name']}", expanded=False):
@@ -2517,7 +3047,7 @@ def render_tab_kg_browser() -> None:
         col3, col4 = st.columns(2)
         with col3:
             methods = selected_mod.get("methods", [])
-            st.markdown(f"### 🧠 测试方法 ({len(methods)})")
+            st.markdown(f"### 测试方法 ({len(methods)})")
             if methods:
                 for method in methods:
                     with st.expander(method.get("name", "未命名方法"), expanded=False):
@@ -2528,7 +3058,7 @@ def render_tab_kg_browser() -> None:
         with col4:
             templates = selected_mod.get("templates", [])
             failures = selected_mod.get("failure_modes", [])
-            st.markdown(f"### 🧩 模板与复盘 ({len(templates) + len(failures)})")
+            st.markdown(f"### 模板与复盘 ({len(templates) + len(failures)})")
             if templates:
                 st.markdown("**用例模板**")
                 for tpl in templates:
@@ -2548,7 +3078,7 @@ def render_tab_kg_browser() -> None:
 def main() -> None:
     icon_path = _UI_DIR / "assets" / "icon.svg"
     st.set_page_config(
-        page_title="AI 测试用例生成",
+        page_title="一体化智能测试管理平台",
         page_icon=str(icon_path) if icon_path.exists() else None,
         layout="wide",
         initial_sidebar_state="expanded",
@@ -2556,41 +3086,38 @@ def main() -> None:
     st.markdown(APP_CSS, unsafe_allow_html=True)
 
     _init_session()
+    _auto_bootstrap_startup()
 
-    st.markdown("# AI 测试用例生成")
-    st.markdown('<p class="app-subtitle">需求导入、批量生成、评审与导出（单机数据保存在 data 目录）</p>', unsafe_allow_html=True)
-
-    # --- Metrics Dashboard ---
-    if "context" in st.session_state:
-        ctx = st.session_state.context
-        current_cases = _current_batch_cases()
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            st.metric("本次文档用例", f"{len(current_cases)}")
-        with m2:
-            avg_time = ctx.total_generation_time / ctx.total_requests if ctx.total_requests > 0 else 0
-            st.metric("平均耗时", f"{avg_time:.2f}s")
-        with m3:
-            hit_rate = (ctx.kg_hit_count / ctx.total_requests * 100) if ctx.total_requests > 0 else 0
-            st.metric("知识图谱命中率", f"{hit_rate:.1f}%")
-        if st.session_state.current_generation_time:
-            st.caption(f"最近生成时间：{_format_dt(st.session_state.current_generation_time)}")
-    
     with st.sidebar:
         render_sidebar()
 
-    tab_guide, tab_in, tab_gen, tab_out, tab_kg = st.tabs(
-        ["使用说明", "导入需求", "生成用例", "评审与导出", "知识图谱"]
+    page = st.session_state.get("current_page", "首页")
+    if page == "使用说明":
+        st.session_state.current_page = "首页"
+        page = "首页"
+    st.markdown(_topbar_html(page), unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="app-shell-header">
+            <div class="app-shell-title">
+                <div class="app-shell-minor">{page}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    with tab_guide:
-        render_tab_guide()
-    with tab_in:
+
+    if page == "首页":
+        render_home_dashboard()
+    elif page == "数据统计":
+        render_tab_stats()
+    elif page == "导入需求":
         render_tab_import()
-    with tab_gen:
+    elif page == "生成用例":
         render_tab_generate()
-    with tab_out:
+    elif page == "评审与导出":
         render_tab_review_export()
-    with tab_kg:
+    elif page == "知识图谱":
         render_tab_kg_browser()
 
 

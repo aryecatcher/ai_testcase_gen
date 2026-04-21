@@ -30,12 +30,28 @@ class FeishuClient:
         self.tenant_access_token = tenant_access_token or os.getenv("FEISHU_TENANT_TOKEN", "")
         self.base_url = (base_url or os.getenv("FEISHU_OPEN_BASE_URL", "https://open.feishu.cn")).rstrip("/")
         self._cached_token: str = ""
+        self.last_error: str = ""
+
+    @staticmethod
+    def _normalize_text_list(values: List[Any]) -> List[str]:
+        normalized: List[str] = []
+        for value in values or []:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text or text.lower() == "none":
+                continue
+            normalized.append(text)
+        return normalized
 
     def _ensure_auth(self) -> bool:
         if self.tenant_access_token:
+            self.last_error = ""
             return True
         if self.app_id and self.app_secret:
+            self.last_error = ""
             return True
+        self.last_error = "缺少飞书认证信息：需要 tenant_access_token 或 app_id/app_secret。"
         logger.warning("Feishu credentials missing. Need tenant_access_token or app_id/app_secret.")
         return False
 
@@ -56,8 +72,8 @@ class FeishuClient:
 
     @staticmethod
     def compare_headers(expected: List[str], actual: List[str]) -> Dict[str, List[str]]:
-        exp = [str(x).strip() for x in expected if str(x).strip()]
-        act = [str(x).strip() for x in actual if str(x).strip()]
+        exp = FeishuClient._normalize_text_list(expected)
+        act = FeishuClient._normalize_text_list(actual)
         missing = [x for x in exp if x not in act]
         extra = [x for x in act if x not in exp]
         matched = [x for x in exp if x in act]
@@ -80,11 +96,14 @@ class FeishuClient:
             resp.raise_for_status()
             data = resp.json()
             if data.get("code") != 0:
+                self.last_error = f"飞书认证失败：{data}"
                 logger.error(f"Feishu auth failed: {data}")
                 return None
             self._cached_token = data.get("tenant_access_token", "")
+            self.last_error = ""
             return self._cached_token
         except Exception as e:
+            self.last_error = f"飞书认证异常：{e}"
             logger.error(f"Feishu auth error: {e}")
             return None
 
@@ -181,7 +200,7 @@ class FeishuClient:
         try:
             data = self._request("GET", url, token)
             values = (((data.get("data", {}) or {}).get("valueRange", {}) or {}).get("values", []) or [])
-            return [str(v).strip() for v in (values[0] if values else []) if str(v).strip()]
+            return self._normalize_text_list(values[0] if values else [])
         except Exception as e:
             logger.error(f"Feishu get sheet headers error: {e}")
             return []
@@ -279,6 +298,20 @@ class FeishuClient:
                 },
             }
 
+        if any(key in name for key in ["质量特性"]):
+            options = option_values.get(name) or ["功能性", "性能效率", "兼容性", "易用性", "可靠性", "信息安全性", "维护性", "可移植性"]
+            return {
+                "field_name": name,
+                "type": 3,
+                "ui_type": "SingleSelect",
+                "property": {
+                    "options": [
+                        {"name": opt, "color": idx % 54}
+                        for idx, opt in enumerate(options)
+                    ]
+                },
+            }
+
         if any(key in name for key in ["步骤", "预期结果", "前置条件", "正常数据", "异常数据"]):
             return {
                 "field_name": name,
@@ -301,7 +334,11 @@ class FeishuClient:
     def push_sheet_values(self, values: List[List[Any]], spreadsheet_token: str = "", sheet_id: str = "", start_cell: str = "A1") -> bool:
         spreadsheet_token = spreadsheet_token or self.spreadsheet_token
         sheet_id = sheet_id or self.sheet_id or self.detect_sheet_id(spreadsheet_token)
+        start_cell = (start_cell or "").strip().upper() or "A1"
+        if not re.fullmatch(r"[A-Z]+[1-9]\d*", start_cell):
+            start_cell = "A1"
         if not (spreadsheet_token and sheet_id):
+            self.last_error = "缺少 Spreadsheet Token 或 Sheet ID。"
             logger.warning("Feishu sheet spreadsheet_token/sheet_id not configured.")
             return False
         if not self._ensure_auth():
@@ -310,6 +347,7 @@ class FeishuClient:
         if not token:
             return False
         if not values:
+            self.last_error = "没有可推送的数据。"
             logger.warning("Feishu sheet push skipped: no values.")
             return False
 
@@ -328,9 +366,11 @@ class FeishuClient:
         url = f"{self.base_url}/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values"
         try:
             self._request("PUT", url, token, {"valueRange": {"range": range_text, "values": values}})
+            self.last_error = ""
             logger.info(f"Feishu sheet push success: {rows} rows")
             return True
         except Exception as e:
+            self.last_error = str(e)
             logger.error(f"Feishu sheet push error: {e}")
             return False
 

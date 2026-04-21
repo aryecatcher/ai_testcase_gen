@@ -10,6 +10,7 @@ sys.path.insert(0, project_root)
 
 from src.core.ai.llm_service import _llm_cache_key
 from src.core.ai.evaluator import build_case_map, score_judge_result
+from src.core.analytics import build_statistics, classify_quality_category
 from src.core.generation.validators import ValidationInterceptor
 from src.core.generation.generator import TestCaseGenerator
 from src.core.ingestion.change_analyzer import analyze_requirement_changes, apply_case_change_plan
@@ -98,9 +99,11 @@ def test_exporters_smoke_output_non_empty():
 
     headers = TestCaseExporter([case1, case2]).to_sheet_values()[0]
     assert headers == [
+        "项目名称",
         "测试用例 ID",
         "需求对应",
         "优先级",
+        "质量特性",
         "前提条件",
         "测试目的描述",
         "测试步骤概述",
@@ -227,3 +230,37 @@ def test_kg_ontology_auto_upgrade_is_triggered(tmp_path):
     ]
     assert failure_nodes, "应成功入库 failure mode"
     assert any(entry.get("action") == "AUTO_UPGRADE_ONTOLOGY" for entry in repo.audit_log)
+
+
+def test_fixed_statistics_classification_works():
+    req_security = Requirement(
+        id="REQ-SEC",
+        original_text="系统应支持权限控制、token 校验与审计日志。",
+        extracted_entities={"module": "权限中心", "feature": "鉴权"},
+    )
+    req_perf = Requirement(
+        id="REQ-PERF",
+        original_text="系统在 1000 并发下响应时间不超过 2 秒，控制 CPU 与内存占用。",
+        extracted_entities={"module": "告警管理", "feature": "性能监控"},
+    )
+    case = TestCase(
+        test_case_id="TC-SEC",
+        related_req_id="REQ-SEC",
+        title="校验越权访问被拦截",
+        dimension="Security",
+        test_instruction=TestInstruction(
+            steps=["1. 使用低权限账号访问高权限接口"],
+            expected_result="返回无权限",
+        ),
+    )
+
+    sec_result = classify_quality_category(req_security.original_text, ["权限", "token"])
+    assert sec_result["category"] == "信息安全性"
+
+    stats = build_statistics([req_security, req_perf], [case])
+    summary = {row["分类"]: row for row in stats["category_summary"]}
+    assert summary["信息安全性"]["需求数"] == 1
+    assert summary["性能效率"]["需求数"] == 1
+    assert summary["信息安全性"]["用例数"] == 1
+    assert req_security.ingestion_metadata["quality_characteristic"] == "信息安全性"
+    assert case.system_env["quality_characteristic"] == "信息安全性"

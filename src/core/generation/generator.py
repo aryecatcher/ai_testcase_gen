@@ -66,10 +66,13 @@ def _to_req_spec(raw):
 
 
 class TestCaseGenerator:
-    def __init__(self, llm_service: LLMService, kg_service: KnowledgeGraphService, max_concurrency: int = 20):
+    def __init__(self, llm_service: LLMService, kg_service: KnowledgeGraphService, max_concurrency: int | None = None):
         self.llm_service = llm_service
         self.kg_service = kg_service
-        self.max_concurrency = max_concurrency
+        if max_concurrency is None:
+            self.max_concurrency = 4 if getattr(llm_service, "_is_local_compatible", False) else 20
+        else:
+            self.max_concurrency = max_concurrency
         self.synth = DataSynthesizer()
         self.validator = ValidationInterceptor()
         self.parser = RequirementParser()

@@ -50,18 +50,16 @@ class GenerationWorkflow:
         workflow.add_node("retrieve_context", self.node_retrieve_context)
         workflow.add_node("generate_initial", self.node_generate_initial)
         workflow.add_node("validate_and_augment", self.node_validate_and_augment)
-        workflow.add_node("ai_judge", self.node_ai_judge)
         workflow.add_node("optimize", self.node_optimize)
         
         # Add edges
         workflow.set_entry_point("retrieve_context")
         workflow.add_edge("retrieve_context", "generate_initial")
         workflow.add_edge("generate_initial", "validate_and_augment")
-        workflow.add_edge("validate_and_augment", "ai_judge")
         
         # Conditional edge for optimization
         workflow.add_conditional_edges(
-            "ai_judge",
+            "validate_and_augment",
             self.should_optimize,
             {
                 "continue": "optimize",
@@ -73,12 +71,6 @@ class GenerationWorkflow:
         workflow.add_edge("optimize", "validate_and_augment")
         
         self.app = workflow.compile()
-
-    def _local_fast_mode(self) -> bool:
-        return bool(
-            getattr(self.llm_service, "_is_local_compatible", False)
-            and getattr(self.llm_service, "model_gen", "") == getattr(self.llm_service, "model_judge", "")
-        )
 
     async def node_retrieve_context(self, state: GenerationState) -> Dict[str, Any]:
         req = state["requirement"]
@@ -185,91 +177,9 @@ class GenerationWorkflow:
             "trace": trace_logs
         }
 
-    async def node_ai_judge(self, state: GenerationState) -> Dict[str, Any]:
-        logger.info(f"Step 4: AI Judge reviewing cases for {state['requirement'].id}")
-        if self._local_fast_mode():
-            return {
-                "status": "跳过 AI 审计 (本地快速模式)",
-                "trace": ["⏭️ [审计] 当前为本地 7b 快速模式，跳过 AI 判官以提升速度与稳定性。"],
-                "feedback": state["feedback"],
-                "final_cases": state["final_cases"],
-            }
-        
-        if not state["kg_constraints"]:
-            return {
-                "status": "跳过 AI 审计 (无图谱约束)",
-                "trace": ["⏭️ [审计] 知识图谱中无相关约束，跳过判官节点。"],
-                "feedback": state["feedback"], # Keep feedback
-                "final_cases": state["final_cases"] # Ensure final_cases is passed to the next state
-            }
-
-        judge_fn = getattr(self.llm_service, "async_judge_cases", None)
-        if not callable(judge_fn):
-            return {
-                "status": "跳过 AI 审计 (Judge 不可用)",
-                "trace": ["⏭️ [审计] 当前 LLM 服务未提供 async_judge_cases，跳过判官节点。"],
-                "feedback": state["feedback"],
-                "final_cases": state["final_cases"]
-            }
-        
-        # 兼容 test_instruction 为 dict 或对象
-        def _get_ti_field(ti, field, default):
-            if isinstance(ti, dict):
-                return ti.get(field, default)
-            return getattr(ti, field, default)
-
-        cases_to_judge = [
-            {
-                "title": c.title,
-                "steps": _get_ti_field(c.test_instruction, "steps", []),
-                "expected": _get_ti_field(c.test_instruction, "expected_result", "")
-            }
-            for c in state["final_cases"]
-        ]
-        
-        judge_result = await judge_fn(
-            kg_constraints=state["kg_constraints"],
-            test_cases=cases_to_judge
-        )
-        
-        violations = judge_result.get("violations", [])
-        gaps = judge_result.get("gaps", [])
-        passed = judge_result.get("passed", True)
-        tokens = judge_result.get("tokens", 0) if isinstance(judge_result, dict) else 0
-        model_name = getattr(self.llm_service, "model_judge", "LLM")
-        
-        current_feedback = state.get("feedback", "")
-        new_trace = []
-        
-        if violations or gaps:
-            judge_feedback = ""
-            if violations:
-                judge_feedback += "### AI 判官发现违规:\n" + "\n".join([f"- {v}" for v in violations])
-            if gaps:
-                if judge_feedback: judge_feedback += "\n"
-                judge_feedback += "### AI 判官覆盖建议:\n" + "\n".join([f"- {g}" for g in gaps])
-            
-            # Combine previous feedback (from validator) and new judge feedback
-            combined_feedback = (current_feedback + "\n\n" + judge_feedback).strip()
-            new_trace.append(f"👨‍⚖️ [判官] {model_name} 发现 {len(violations)} 处合规性问题和 {len(gaps)} 处覆盖缺失。")
-            status = "审计未通过，准备优化..."
-        else:
-            combined_feedback = current_feedback
-            new_trace.append(f"👨‍⚖️ [判官] {model_name} 审计通过，用例完全符合知识图谱业务约束。")
-            status = "审计通过"
-            
-        return {
-            "feedback": combined_feedback,
-            "status": status,
-            "trace": new_trace,
-            "tokens": tokens,
-            "final_cases": state["final_cases"] # Pass cases through
-        }
-
     def should_optimize(self, state: GenerationState) -> str:
-        if self._local_fast_mode():
-            if not state.get("final_cases") and state.get("iteration", 0) < 2:
-                return "continue"
+        # Local single-machine models are much slower on multi-round refinement.
+        if getattr(self.llm_service, "_local_fast_mode", False):
             return "end"
         # 允许最多 2 次优化迭代 (Iteration 1 为初稿，Iteration 2/3 为优化)
         if state.get("feedback") and state.get("iteration", 0) < 3:

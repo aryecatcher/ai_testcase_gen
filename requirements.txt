@@ -10,6 +10,7 @@ networkx
 rapidfuzz
 Faker
 sqlmodel
+psycopg[binary]
 langgraph
 fastapi
 uvicorn

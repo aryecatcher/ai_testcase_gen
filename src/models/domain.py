@@ -195,6 +195,19 @@ class TestCase(SQLModel, table=True):
         return self.test_instruction
 
 
+class GenerationJob(SQLModel, table=True):
+    """Persisted generation job state for resume / multi-user deployment."""
+    job_id: str = SQLField(primary_key=True)
+    upload_batch_id: str = ""
+    req_ids: List[str] = SQLField(default_factory=list, sa_column=Column(JSON))
+    status: str = "running"
+    events: List[Dict[str, Any]] = SQLField(default_factory=list, sa_column=Column(JSON))
+    result_count: int = 0
+    error: str = ""
+    created_at: datetime = SQLField(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
+
+
 class ProjectContext(BaseModel):
     """Global Context"""
     project_name: str = "Untitled Project"

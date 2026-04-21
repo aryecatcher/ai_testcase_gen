@@ -41,9 +41,8 @@ class LLMService:
         self.api_key = api_key if api_key is not None else os.getenv("OPENAI_API_KEY", "ollama")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
         
-        # 当前版本固定本地运行，生成与判官统一使用 deepseek-r1:7b
+        # 当前版本固定单模型生成
         self.model_gen = model or os.getenv("LLM_MODEL_GEN", "deepseek-r1:7b")
-        self.model_judge = os.getenv("LLM_MODEL_JUDGE", self.model_gen)
         
         self.client = None
         self.async_client = None
@@ -61,6 +60,9 @@ class LLMService:
 
         base_url_lower = self.base_url.lower()
         self._is_local_compatible = any(host in base_url_lower for host in ["localhost", "127.0.0.1"])
+        # Compatibility flag used by generation fallback / retry logic.
+        self._local_fast_mode = self._is_local_compatible
+        self.timeout_seconds = float(os.getenv("LLM_TIMEOUT_SECONDS", "120" if self._is_local_compatible else "60"))
         self._config_error: Optional[str] = None
         if self.api_key and self.api_key.lower() == "ollama" and not self._is_local_compatible:
             self._config_error = "当前 Base URL 指向云端接口，但 API Key 仍为本地占位值 'ollama'。请填写真实 DeepSeek API Key，或把 Base URL 改回本地服务。"
@@ -69,17 +71,15 @@ class LLMService:
         if self._config_error:
             logger.warning(self._config_error)
         elif self.api_key:
-            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=20.0)
-            self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=20.0)
+            self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout_seconds)
+            self.async_client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout_seconds)
         else:
             # Fallback for local dev if env var missing but intended for local
             if self._is_local_compatible:
-                self.client = OpenAI(api_key="ollama", base_url=self.base_url, timeout=20.0)
-                self.async_client = AsyncOpenAI(api_key="ollama", base_url=self.base_url, timeout=20.0)
+                self.client = OpenAI(api_key="ollama", base_url=self.base_url, timeout=self.timeout_seconds)
+                self.async_client = AsyncOpenAI(api_key="ollama", base_url=self.base_url, timeout=self.timeout_seconds)
             else:
                 logger.warning("No OpenAI API Key provided. Running in MOCK mode.")
-        self._local_fast_mode = self._is_local_compatible and self.model_gen == self.model_judge
-
     def check_connection(self) -> Dict[str, Any]:
         """
         Checks if the LLM connection is valid for both models.
@@ -103,17 +103,16 @@ class LLMService:
                 return f"模型 `{model_name}` 连接失败：请确认服务地址可访问，或本地模型服务已经启动。"
             return f"模型 `{model_name}` 连接失败：{text}"
 
-        for model_name in [self.model_gen, self.model_judge]:
-            try:
-                self.client.chat.completions.create(
-                    model=model_name,
-                    messages=[{"role": "user", "content": "Test"}],
-                    max_tokens=5
-                )
-            except Exception as e:
-                return {"status": "error", "message": _format_error(model_name, e)}
+        try:
+            self.client.chat.completions.create(
+                model=self.model_gen,
+                messages=[{"role": "user", "content": "Test"}],
+                max_tokens=5
+            )
+        except Exception as e:
+            return {"status": "error", "message": _format_error(self.model_gen, e)}
 
-        return {"status": "success", "message": f"Connected to {self.model_gen} and {self.model_judge}"}
+        return {"status": "success", "message": f"Connected to {self.model_gen}"}
 
     def _usage_tokens(self, response) -> int:
         try:
@@ -1048,7 +1047,7 @@ class LLMService:
 
         try:
             response = await self.async_client.chat.completions.create(
-                model=self.model_judge,
+                model=self.model_gen,
                 messages=[
                     {"role": "system", "content": "You are a senior QA expert. Be strict and precise."},
                     {"role": "user", "content": judge_prompt}
@@ -1081,7 +1080,7 @@ class LLMService:
 
         try:
             response = await self.async_client.chat.completions.create(
-                model=self.model_judge,
+                model=self.model_gen,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"}
             )
@@ -1119,7 +1118,7 @@ class LLMService:
         
         try:
             response = await self.async_client.chat.completions.create(
-                model=self.model_judge,
+                model=self.model_gen,
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"}
             )

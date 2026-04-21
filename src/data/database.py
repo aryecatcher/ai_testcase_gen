@@ -1,19 +1,24 @@
 from sqlmodel import SQLModel, create_engine, Session, select
 from typing import List, Optional
 import os
-from ..models.domain import Requirement, TestCase
+from ..models.domain import Requirement, TestCase, GenerationJob
 
 # Database configuration
 DB_FILE = "data/app_database.db"
-DATABASE_URL = f"sqlite:///{DB_FILE}"
+DEFAULT_DATABASE_URL = f"sqlite:///{DB_FILE}"
+DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 # Create engine
-engine = create_engine(DATABASE_URL, echo=False)
+engine_kwargs = {"echo": False, "pool_pre_ping": True}
+if DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+engine = create_engine(DATABASE_URL, **engine_kwargs)
 
 def init_db():
     """Initialize database and create tables."""
     # Ensure data directory exists
-    os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
+    if DATABASE_URL.startswith("sqlite"):
+        os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     SQLModel.metadata.create_all(engine)
 
 def get_session():
@@ -59,3 +64,15 @@ def get_all_test_cases() -> List[TestCase]:
     with get_session() as session:
         statement = select(TestCase)
         return session.exec(statement).all()
+
+
+def get_generation_job(job_id: str) -> Optional[GenerationJob]:
+    with get_session() as session:
+        return session.get(GenerationJob, job_id)
+
+
+def save_generation_job(job: GenerationJob) -> GenerationJob:
+    with get_session() as session:
+        session.merge(job)
+        session.commit()
+    return job

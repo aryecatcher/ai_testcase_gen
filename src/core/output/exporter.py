@@ -2,16 +2,18 @@ import pandas as pd
 import json
 import os
 from io import BytesIO
+from pathlib import Path
 from typing import List, Dict, Any
 from datetime import datetime
 from urllib.parse import quote
 from loguru import logger
-from ...models.domain import TestCase, TestInstruction, TestDataSets
+from ...models.domain import TestCase, TestInstruction, TestDataSets, Requirement
 
 class TestCaseExporter:
-    def __init__(self, test_cases: List[TestCase], requirement_link_base_url: str = ""):
+    def __init__(self, test_cases: List[TestCase], requirement_link_base_url: str = "", requirements_by_id: Dict[str, Requirement] | None = None):
         self.test_cases = test_cases
         self.requirement_link_base_url = requirement_link_base_url or os.getenv("FEISHU_REQUIREMENT_LINK_BASE_URL", "")
+        self.requirements_by_id = requirements_by_id or {}
 
     def _format_steps(self, steps: List[str]) -> str:
         normalized = []
@@ -58,8 +60,41 @@ class TestCaseExporter:
             return f"{base}{quote(req_id)}"
         return f"{base}/{quote(req_id)}"
 
+    def _req_meta(self, req_id: str) -> Dict[str, Any]:
+        req = self.requirements_by_id.get(req_id)
+        if req is None:
+            return {}
+        meta = getattr(req, "ingestion_metadata", None) or {}
+        if hasattr(meta, "model_dump"):
+            return meta.model_dump(mode="json")
+        if isinstance(meta, dict):
+            return meta
+        return {}
+
+    def _project_name(self, tc: TestCase, system_env: Dict[str, Any]) -> str:
+        value = str((system_env or {}).get("project_name", "") or "").strip()
+        if value:
+            return value
+        req_meta = self._req_meta(tc.related_req_id)
+        for key in ("project_name", "project", "project_title"):
+            value = str(req_meta.get(key, "") or "").strip()
+            if value:
+                return value
+        source_file = str(req_meta.get("source_file", "") or "").strip()
+        if source_file:
+            return Path(source_file).stem
+        return os.getenv("EXPORT_PROJECT_NAME", "当前项目")
+
+    def _quality_characteristic(self, tc: TestCase, system_env: Dict[str, Any]) -> str:
+        value = str((system_env or {}).get("quality_characteristic", "") or "").strip()
+        if value:
+            return value
+        req_meta = self._req_meta(tc.related_req_id)
+        return str(req_meta.get("quality_characteristic", "") or "").strip()
+
     def _header_name_map(self) -> Dict[str, str]:
         return {
+            "Project Name": "项目名称",
             "Case ID": "用例ID",
             "Title": "用例标题",
             "Priority": "优先级",
@@ -73,13 +108,16 @@ class TestCaseExporter:
             "Related Requirement": "关联需求",
             "Related Requirement Link": "关联需求链接",
             "Generated At": "生成时间",
+            "Quality Characteristic": "质量特性",
         }
 
     def _preferred_header_order(self) -> List[str]:
         return [
+            "项目名称",
             "测试用例 ID",
             "需求对应",
             "优先级",
+            "质量特性",
             "前提条件",
             "测试目的描述",
             "测试步骤概述",
@@ -98,9 +136,11 @@ class TestCaseExporter:
                 or "NT"
             ).strip()
             display_row = {
+                "项目名称": row.get("Project Name", ""),
                 "测试用例 ID": row.get("Case ID", ""),
                 "需求对应": row.get("Related Requirement", ""),
                 "优先级": row.get("Priority", ""),
+                "质量特性": row.get("Quality Characteristic", ""),
                 "前提条件": row.get("Precondition", ""),
                 "测试目的描述": row.get("Title", ""),
                 "测试步骤概述": row.get("Steps", ""),
@@ -123,6 +163,7 @@ class TestCaseExporter:
             req_link = self._requirement_link(tc.related_req_id)
             # Flatten structure for Excel
             item = {
+                "Project Name": self._project_name(tc, system_env),
                 "Case ID": tc.test_case_id,
                 "Title": tc.title,
                 "Priority": tc.priority,
@@ -134,6 +175,7 @@ class TestCaseExporter:
                 "Valid Test Data": self._pretty_json(ti.test_data_sets.valid if ti.test_data_sets else {}),
                 "Invalid Test Data": self._pretty_json(ti.test_data_sets.invalid if ti.test_data_sets else {}),
                 "Related Requirement": tc.related_req_id,
+                "Quality Characteristic": self._quality_characteristic(tc, system_env),
                 "Actual Result": (system_env or {}).get("actual_result", ""),
                 "Execution Status": (system_env or {}).get("execution_status", ""),
                 "Generated At": (system_env or {}).get("generated_at", ""),
@@ -169,6 +211,16 @@ class TestCaseExporter:
         return {
             "优先级": uniq(priority_values, ["P0", "P1", "P2", "P3"]),
             "用例类型": uniq(type_values, ["Functional", "Interface", "Security", "Performance", "Compatibility", "Usability"]),
+            "质量特性": [
+                "功能性",
+                "性能效率",
+                "兼容性",
+                "易用性",
+                "可靠性",
+                "信息安全性",
+                "维护性",
+                "可移植性",
+            ],
         }
 
     def to_feishu_records(self) -> List[Dict[str, Any]]:

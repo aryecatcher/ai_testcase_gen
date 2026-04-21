@@ -1,0 +1,15 @@
+{
+  "feishu_shared_url": "",
+  "feishu_app_id": "cli_a955864ea7b8dcbb",
+  "feishu_tenant_token": "",
+  "feishu_app_secret": "3c2Hke6l55kRBF8rcfy3IgZqVShmgxjw",
+  "feishu_open_base_url": "",
+  "feishu_requirement_link_base_url": "",
+  "feishu_spreadsheet_token": "LgWrsvFCbh3WTKtjt4qcRYWAneb",
+  "feishu_sheet_id": "114b52",
+  "feishu_sheet_start_cell": "A1",
+  "feishu_auto_create_sheet": false,
+  "feishu_sheet_title": "AI测试用例_20260415_1728",
+  "feishu_sheet_folder_token": "",
+  "feishu_last_sheet_url": "https://feishu.cn/sheets/LgWrsvFCbh3WTKtjt4qcRYWAneb?sheet=114b52"
+}

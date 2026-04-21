@@ -166,6 +166,244 @@
       "type": "Rule",
       "content": "支付金额必须保留两位小数",
       "id": "Rule_2251184181522339832"
+    },
+    {
+      "type": "Module",
+      "content": "",
+      "alias": [],
+      "metadata": {
+        "category": "global",
+        "dimension": "methodology"
+      },
+      "id": "测试方法库"
+    },
+    {
+      "type": "Module",
+      "content": "",
+      "alias": [],
+      "metadata": {
+        "category": "global",
+        "dimension": "template"
+      },
+      "id": "用例模板库"
+    },
+    {
+      "type": "Module",
+      "content": "",
+      "alias": [],
+      "metadata": {
+        "category": "global",
+        "dimension": "failure"
+      },
+      "id": "故障复盘库"
+    },
+    {
+      "type": "Module",
+      "content": "",
+      "alias": [
+        "权限管理",
+        "角色权限"
+      ],
+      "metadata": {},
+      "id": "权限中心"
+    },
+    {
+      "type": "Module",
+      "content": "",
+      "alias": [
+        "审批流",
+        "流程审批"
+      ],
+      "metadata": {},
+      "id": "审批中心"
+    },
+    {
+      "type": "Feature",
+      "content": "角色、菜单、接口权限控制",
+      "alias": [
+        "权限控制",
+        "角色权限",
+        "菜单权限"
+      ],
+      "metadata": {},
+      "id": "PermissionControl"
+    },
+    {
+      "type": "Feature",
+      "content": "审批流程发起、流转、驳回、会签",
+      "alias": [
+        "审批流",
+        "审批流程"
+      ],
+      "metadata": {},
+      "id": "ApprovalFlow"
+    },
+    {
+      "type": "TestMethod",
+      "content": "按有效/无效输入集合划分测试数据，覆盖正常值与非法值。",
+      "alias": [
+        "等价类划分"
+      ],
+      "metadata": {
+        "display_name": "等价类划分"
+      },
+      "id": "EquivalencePartition"
+    },
+    {
+      "type": "TestMethod",
+      "content": "围绕最小值、最大值、临界点、次数阈值设计测试。",
+      "alias": [
+        "边界值分析"
+      ],
+      "metadata": {
+        "display_name": "边界值分析"
+      },
+      "id": "BoundaryValue"
+    },
+    {
+      "type": "TestMethod",
+      "content": "把输入条件与业务结果映射成约束组合，适合复杂规则。",
+      "alias": [
+        "因果图"
+      ],
+      "metadata": {
+        "display_name": "因果图"
+      },
+      "id": "CauseEffect"
+    },
+    {
+      "type": "TestMethod",
+      "content": "基于历史缺陷、异常输入、空格、特殊字符和重复提交构造测试。",
+      "alias": [
+        "错误猜测法"
+      ],
+      "metadata": {
+        "display_name": "错误猜测法"
+      },
+      "id": "ErrorGuessing"
+    },
+    {
+      "type": "TestMethod",
+      "content": "针对登录锁定、审批流转、任务状态变化等设计测试。",
+      "alias": [
+        "状态迁移"
+      ],
+      "metadata": {
+        "display_name": "状态迁移"
+      },
+      "id": "StateTransition"
+    },
+    {
+      "type": "Template",
+      "content": "字段: ID、模块、前置条件、步骤、预期、有效数据、无效数据。适用于登录、验证码、忘记密码。",
+      "alias": [
+        "认证功能模板"
+      ],
+      "metadata": {
+        "display_name": "认证功能模板"
+      },
+      "id": "AuthCaseTemplate"
+    },
+    {
+      "type": "Template",
+      "content": "字段: 请求方法、请求头、请求体、状态码、响应结构、异常提示。",
+      "alias": [
+        "接口校验模板"
+      ],
+      "metadata": {
+        "display_name": "接口校验模板"
+      },
+      "id": "ApiCaseTemplate"
+    },
+    {
+      "type": "Template",
+      "content": "字段: 发起条件、流转动作、节点状态、通知结果、审计记录。",
+      "alias": [
+        "审批流模板"
+      ],
+      "metadata": {
+        "display_name": "审批流模板"
+      },
+      "id": "ApprovalCaseTemplate"
+    },
+    {
+      "type": "FailureMode",
+      "content": "连续输错密码达到阈值后未锁定账号，属于安全控制失效。",
+      "alias": [
+        "登录三次失败未锁定"
+      ],
+      "metadata": {
+        "display_name": "登录三次失败未锁定",
+        "source": "postmortem"
+      },
+      "id": "LoginLockFailure"
+    },
+    {
+      "type": "FailureMode",
+      "content": "连续失败后未触发验证码，或验证码错误时未给出明确提示。",
+      "alias": [
+        "验证码触发条件失效"
+      ],
+      "metadata": {
+        "display_name": "验证码触发条件失效",
+        "source": "postmortem"
+      },
+      "id": "CaptchaMissingFailure"
+    },
+    {
+      "type": "FailureMode",
+      "content": "登录链路中未加密传输密码，或后端存在明文存储风险。",
+      "alias": [
+        "密码明文传输或存储"
+      ],
+      "metadata": {
+        "display_name": "密码明文传输或存储",
+        "source": "postmortem"
+      },
+      "id": "PasswordStorageFailure"
+    },
+    {
+      "type": "FailureMode",
+      "content": "审批流某节点被绕过，导致状态与审计记录不一致。",
+      "alias": [
+        "审批节点被跳过"
+      ],
+      "metadata": {
+        "display_name": "审批节点被跳过",
+        "source": "postmortem"
+      },
+      "id": "ApprovalSkipFailure"
+    },
+    {
+      "type": "Business",
+      "content": "第三方登录回调、绑定和取消绑定流程",
+      "alias": [
+        "第三方登录",
+        "微信登录",
+        "钉钉登录"
+      ],
+      "metadata": {},
+      "id": "ThirdPartyLogin"
+    },
+    {
+      "type": "Security",
+      "content": "低权限用户尝试访问高权限菜单或接口",
+      "alias": [
+        "越权访问",
+        "权限提升"
+      ],
+      "metadata": {},
+      "id": "PermissionEscalation"
+    },
+    {
+      "type": "Business",
+      "content": "审批单被驳回后重新提交与记录追踪",
+      "alias": [
+        "驳回重提",
+        "审批回退"
+      ],
+      "metadata": {},
+      "id": "ApprovalRejectFlow"
     }
   ],
   "links": [
@@ -178,6 +416,21 @@
       "relation": "FOLLOWS",
       "source": "用户中心",
       "target": "安全基线"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "用户中心",
+      "target": "测试方法库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "用户中心",
+      "target": "用例模板库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "用户中心",
+      "target": "故障复盘库"
     },
     {
       "relation": "HAS_RULE",
@@ -220,6 +473,51 @@
       "target": "BlacklistCheck"
     },
     {
+      "relation": "USES_METHOD",
+      "source": "Login",
+      "target": "EquivalencePartition"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "Login",
+      "target": "BoundaryValue"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "Login",
+      "target": "ErrorGuessing"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "Login",
+      "target": "StateTransition"
+    },
+    {
+      "relation": "HAS_TEMPLATE",
+      "source": "Login",
+      "target": "AuthCaseTemplate"
+    },
+    {
+      "relation": "HAS_FAILURE_MODE",
+      "source": "Login",
+      "target": "LoginLockFailure"
+    },
+    {
+      "relation": "HAS_FAILURE_MODE",
+      "source": "Login",
+      "target": "CaptchaMissingFailure"
+    },
+    {
+      "relation": "HAS_FAILURE_MODE",
+      "source": "Login",
+      "target": "PasswordStorageFailure"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "Login",
+      "target": "ThirdPartyLogin"
+    },
+    {
       "relation": "HAS_FEATURE",
       "source": "交易中心",
       "target": "Payment"
@@ -228,6 +526,21 @@
       "relation": "FOLLOWS",
       "source": "交易中心",
       "target": "安全基线"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "交易中心",
+      "target": "测试方法库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "交易中心",
+      "target": "用例模板库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "交易中心",
+      "target": "故障复盘库"
     },
     {
       "relation": "HAS_RULE",
@@ -270,6 +583,26 @@
       "target": "Rule_2251184181522339832"
     },
     {
+      "relation": "USES_METHOD",
+      "source": "Payment",
+      "target": "EquivalencePartition"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "Payment",
+      "target": "BoundaryValue"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "Payment",
+      "target": "ErrorGuessing"
+    },
+    {
+      "relation": "HAS_TEMPLATE",
+      "source": "Payment",
+      "target": "ApiCaseTemplate"
+    },
+    {
       "relation": "HAS_FEATURE",
       "source": "订单中心",
       "target": "OrderCreate"
@@ -278,6 +611,21 @@
       "relation": "FOLLOWS",
       "source": "订单中心",
       "target": "安全基线"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "订单中心",
+      "target": "测试方法库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "订单中心",
+      "target": "用例模板库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "订单中心",
+      "target": "故障复盘库"
     },
     {
       "relation": "HAS_RULE",
@@ -300,6 +648,21 @@
       "target": "安全基线"
     },
     {
+      "relation": "FOLLOWS",
+      "source": "API网关",
+      "target": "测试方法库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "API网关",
+      "target": "用例模板库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "API网关",
+      "target": "故障复盘库"
+    },
+    {
       "relation": "HAS_RULE",
       "source": "ApiCall",
       "target": "RateLimit"
@@ -318,6 +681,156 @@
       "relation": "GLOBAL_RULE",
       "source": "安全基线",
       "target": "CommonXSS"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "测试方法库",
+      "target": "EquivalencePartition"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "测试方法库",
+      "target": "BoundaryValue"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "测试方法库",
+      "target": "CauseEffect"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "测试方法库",
+      "target": "ErrorGuessing"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "测试方法库",
+      "target": "StateTransition"
+    },
+    {
+      "relation": "HAS_TEMPLATE",
+      "source": "用例模板库",
+      "target": "AuthCaseTemplate"
+    },
+    {
+      "relation": "HAS_TEMPLATE",
+      "source": "用例模板库",
+      "target": "ApiCaseTemplate"
+    },
+    {
+      "relation": "HAS_TEMPLATE",
+      "source": "用例模板库",
+      "target": "ApprovalCaseTemplate"
+    },
+    {
+      "relation": "HAS_FAILURE_MODE",
+      "source": "故障复盘库",
+      "target": "LoginLockFailure"
+    },
+    {
+      "relation": "HAS_FAILURE_MODE",
+      "source": "故障复盘库",
+      "target": "CaptchaMissingFailure"
+    },
+    {
+      "relation": "HAS_FAILURE_MODE",
+      "source": "故障复盘库",
+      "target": "PasswordStorageFailure"
+    },
+    {
+      "relation": "HAS_FAILURE_MODE",
+      "source": "故障复盘库",
+      "target": "ApprovalSkipFailure"
+    },
+    {
+      "relation": "HAS_FEATURE",
+      "source": "权限中心",
+      "target": "PermissionControl"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "权限中心",
+      "target": "测试方法库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "权限中心",
+      "target": "用例模板库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "权限中心",
+      "target": "故障复盘库"
+    },
+    {
+      "relation": "HAS_FEATURE",
+      "source": "审批中心",
+      "target": "ApprovalFlow"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "审批中心",
+      "target": "测试方法库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "审批中心",
+      "target": "用例模板库"
+    },
+    {
+      "relation": "FOLLOWS",
+      "source": "审批中心",
+      "target": "故障复盘库"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "PermissionControl",
+      "target": "EquivalencePartition"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "PermissionControl",
+      "target": "ErrorGuessing"
+    },
+    {
+      "relation": "HAS_TEMPLATE",
+      "source": "PermissionControl",
+      "target": "AuthCaseTemplate"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "PermissionControl",
+      "target": "PermissionEscalation"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "ApprovalFlow",
+      "target": "StateTransition"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "ApprovalFlow",
+      "target": "CauseEffect"
+    },
+    {
+      "relation": "USES_METHOD",
+      "source": "ApprovalFlow",
+      "target": "ErrorGuessing"
+    },
+    {
+      "relation": "HAS_TEMPLATE",
+      "source": "ApprovalFlow",
+      "target": "ApprovalCaseTemplate"
+    },
+    {
+      "relation": "HAS_FAILURE_MODE",
+      "source": "ApprovalFlow",
+      "target": "ApprovalSkipFailure"
+    },
+    {
+      "relation": "HAS_SCENARIO",
+      "source": "ApprovalFlow",
+      "target": "ApprovalRejectFlow"
     }
   ]
 }
