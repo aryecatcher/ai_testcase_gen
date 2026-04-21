@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Test Case Generator Legacy UI
+After=network.target ai-testcase-backend.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai_testcase_gen
+EnvironmentFile=/opt/ai_testcase_gen/.env
+ExecStart=/opt/ai_testcase_gen/.venv/bin/streamlit run ui/main.py --server.port 8504
+Restart=always
+RestartSec=5
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

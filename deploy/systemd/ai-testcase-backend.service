@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Test Case Generator Backend
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai_testcase_gen
+EnvironmentFile=/opt/ai_testcase_gen/.env
+ExecStart=/opt/ai_testcase_gen/.venv/bin/python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8002
+Restart=always
+RestartSec=5
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
