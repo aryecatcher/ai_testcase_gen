@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
+from loguru import logger
 
 
 QUALITY_CATEGORY_DEFINITIONS: Dict[str, str] = {
@@ -39,6 +40,9 @@ _CATEGORY_PRIORITY = [
     "功能性",
 ]
 
+_LLM_SERVICE = None
+_LLM_SERVICE_INIT_FAILED = False
+
 
 def _normalize_text(value: Any) -> str:
     text = str(value or "").strip().lower()
@@ -46,7 +50,7 @@ def _normalize_text(value: Any) -> str:
     return text
 
 
-def classify_quality_category(text: str, extra_texts: List[str] | None = None) -> Dict[str, Any]:
+def _classify_quality_category_fixed_rules(text: str, extra_texts: List[str] | None = None) -> Dict[str, Any]:
     corpus_parts = [text] + list(extra_texts or [])
     corpus = " ".join(_normalize_text(item) for item in corpus_parts if item)
 
@@ -72,6 +76,36 @@ def classify_quality_category(text: str, extra_texts: List[str] | None = None) -
         "matched_keywords": ["默认归类"],
         "method": "fixed_rules",
     }
+
+
+def _get_llm_service():
+    global _LLM_SERVICE, _LLM_SERVICE_INIT_FAILED
+    if _LLM_SERVICE is not None:
+        return _LLM_SERVICE
+    if _LLM_SERVICE_INIT_FAILED:
+        return None
+    try:
+        from src.core.ai.llm_service import LLMService
+        service = LLMService()
+        if not getattr(service, "client", None) or getattr(service, "_config_error", None):
+            _LLM_SERVICE_INIT_FAILED = True
+            return None
+        _LLM_SERVICE = service
+        return _LLM_SERVICE
+    except Exception as e:
+        logger.warning(f"Failed to initialize LLM quality classifier, fallback to rules: {e}")
+        _LLM_SERVICE_INIT_FAILED = True
+        return None
+
+
+def classify_quality_category(text: str, extra_texts: List[str] | None = None) -> Dict[str, Any]:
+    service = _get_llm_service()
+    if service is not None:
+        try:
+            return service.classify_quality_characteristic(text, QUALITY_CATEGORY_DEFINITIONS, extra_texts)
+        except Exception as e:
+            logger.warning(f"LLM quality classification failed, fallback to rules: {e}")
+    return _classify_quality_category_fixed_rules(text, extra_texts)
 
 
 def _meta_dict(value: Any) -> Dict[str, Any]:
@@ -105,8 +139,10 @@ def annotate_quality_characteristics(requirements: List[Any], test_cases: List[A
         feature = str(getattr(entities, "feature", "") or "")
         result = classify_quality_category(getattr(req, "original_text", ""), [module, feature])
         meta = _meta_dict(getattr(req, "ingestion_metadata", None))
-        if meta.get("quality_characteristic") != result["category"]:
+        if meta.get("quality_characteristic") != result["category"] or meta.get("quality_characteristic_method") != result["method"]:
             meta["quality_characteristic"] = result["category"]
+            meta["quality_characteristic_method"] = result["method"]
+            meta["quality_characteristic_basis"] = result.get("basis", "")
             setattr(req, "ingestion_metadata", meta)
             changed_req += 1
         req_category_map[getattr(req, "id", "")] = result["category"]
@@ -121,8 +157,10 @@ def annotate_quality_characteristics(requirements: List[Any], test_cases: List[A
             [steps, expected, getattr(tc, "dimension", ""), linked_category],
         )
         env = _meta_dict(getattr(tc, "system_env", None))
-        if env.get("quality_characteristic") != result["category"]:
+        if env.get("quality_characteristic") != result["category"] or env.get("quality_characteristic_method") != result["method"]:
             env["quality_characteristic"] = result["category"]
+            env["quality_characteristic_method"] = result["method"]
+            env["quality_characteristic_basis"] = result.get("basis", "")
             setattr(tc, "system_env", env)
             changed_case += 1
 

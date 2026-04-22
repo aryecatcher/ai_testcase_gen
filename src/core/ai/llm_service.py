@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from openai import OpenAI, AsyncOpenAI
 from loguru import logger
 from typing import List, Dict, Any, Optional
-from .prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE, REFINE_PROMPT_TEMPLATE, KG_RULE_EXTRACTION_PROMPT, AI_JUDGE_PROMPT
+from .prompts import SYSTEM_PROMPT, USER_PROMPT_TEMPLATE, REFINE_PROMPT_TEMPLATE, KG_RULE_EXTRACTION_PROMPT, AI_JUDGE_PROMPT, QUALITY_CLASSIFICATION_PROMPT
 from ...models.domain import Requirement, RequirementType, ReqSpec
 from .req_parser import RequirementParser
 from .few_shots import get_examples
@@ -34,6 +34,22 @@ def _llm_cache_key(req_id: str, kg_constraints: str, scenarios: str) -> str:
     for part in (_CACHE_SCHEMA_VERSION, kg_constraints or "", scenarios or ""):
         h.update(part.encode("utf-8"))
     return f"{req_id}_{h.hexdigest()[:24]}"
+
+
+def _quality_cache_key(text: str, extra_texts: Optional[List[str]], definitions: Dict[str, str]) -> str:
+    h = hashlib.sha256()
+    payload = json.dumps(
+        {
+            "schema": "quality_classification_v1",
+            "text": text or "",
+            "extra_texts": list(extra_texts or []),
+            "definitions": definitions,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    h.update(payload.encode("utf-8"))
+    return f"quality_cls_{h.hexdigest()[:24]}"
 
 
 class LLMService:
@@ -714,6 +730,63 @@ class LLMService:
             return cases[:max_cases]
 
         return []
+
+    def classify_quality_characteristic(
+        self,
+        text: str,
+        definitions: Dict[str, str],
+        extra_texts: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        if not self.client or self._config_error:
+            raise RuntimeError(self._config_error or "LLM client unavailable")
+
+        allowed = set(definitions.keys())
+        cache_key = _quality_cache_key(text, extra_texts, definitions)
+        with self._cache_lock:
+            cached = self._cache.get(cache_key)
+        if isinstance(cached, dict) and str(cached.get("category") or "") in allowed:
+            return cached
+
+        definitions_text = "\n".join(f"- {name}: {desc}" for name, desc in definitions.items())
+        extra_context = "\n".join(str(item or "").strip() for item in (extra_texts or []) if str(item or "").strip()) or "无"
+        prompt = QUALITY_CLASSIFICATION_PROMPT.format(
+            definitions=definitions_text,
+            text=text or "",
+            extra_context=extra_context,
+        )
+        response = self.client.chat.completions.create(
+            model=self.model_gen,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or "{}"
+        data = self._robust_json_load(
+            content,
+            stage="quality_classification",
+            meta={"text_preview": (text or "")[:120]},
+        )
+
+        category = str((data or {}).get("category") or "").strip()
+        if category not in allowed:
+            raise ValueError(f"Unexpected quality category: {category}")
+
+        confidence_raw = (data or {}).get("confidence", 0)
+        try:
+            confidence = float(confidence_raw)
+        except Exception:
+            confidence = 0.0
+
+        result = {
+            "category": category,
+            "basis": str((data or {}).get("reason") or definitions.get(category) or "").strip(),
+            "matched_keywords": [],
+            "confidence": max(0.0, min(1.0, confidence)),
+            "method": "llm",
+        }
+        with self._cache_lock:
+            self._cache[cache_key] = result
+            save_json("llm_cache", self._cache)
+        return result
 
     def _heuristic_generate_cases(self, req: Requirement, parsed: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         parsed = parsed or self.parser.parse(req)

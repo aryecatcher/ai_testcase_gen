@@ -221,6 +221,8 @@ async def _run_generation_job(job_id: str) -> None:
             annotate_quality_characteristics(reqs, results)
             with get_session() as session:
                 job_state = session.get(GenerationJob, job_id)
+                for req in reqs:
+                    session.merge(_normalize_requirement_for_db(req))
                 for tc in results:
                     env = getattr(tc, "system_env", None) or {}
                     if hasattr(env, "model_dump"):
@@ -379,7 +381,12 @@ def get_startup_status():
 @app.get("/requirements", response_model=List[Requirement])
 def list_requirements(batch_id: Optional[str] = None):
     requirements = get_all_requirements()
-    annotate_quality_characteristics(requirements, [])
+    changed = annotate_quality_characteristics(requirements, [])
+    if changed.get("requirements_changed"):
+        with get_session() as session:
+            for req in requirements:
+                session.merge(_normalize_requirement_for_db(req))
+            session.commit()
     if batch_id:
         return [r for r in requirements if _req_batch_id(r) == batch_id]
     return requirements
@@ -455,7 +462,14 @@ async def ingest_requirements_files(
 def list_test_cases(batch_id: Optional[str] = None):
     requirements = get_all_requirements()
     test_cases = get_all_test_cases()
-    annotate_quality_characteristics(requirements, test_cases)
+    changed = annotate_quality_characteristics(requirements, test_cases)
+    if changed.get("requirements_changed") or changed.get("test_cases_changed"):
+        with get_session() as session:
+            for req in requirements:
+                session.merge(_normalize_requirement_for_db(req))
+            for tc in test_cases:
+                session.merge(tc)
+            session.commit()
     if batch_id:
         return [tc for tc in test_cases if _case_batch_id(tc) == batch_id]
     return test_cases

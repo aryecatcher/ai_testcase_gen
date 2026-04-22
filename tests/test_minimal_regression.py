@@ -11,6 +11,7 @@ sys.path.insert(0, project_root)
 from src.core.ai.llm_service import _llm_cache_key
 from src.core.ai.evaluator import build_case_map, score_judge_result
 from src.core.analytics import build_statistics, classify_quality_category
+import src.core.analytics as analytics_module
 from src.core.generation.validators import ValidationInterceptor
 from src.core.generation.generator import TestCaseGenerator
 from src.core.ingestion.change_analyzer import analyze_requirement_changes, apply_case_change_plan
@@ -264,3 +265,47 @@ def test_fixed_statistics_classification_works():
     assert summary["信息安全性"]["用例数"] == 1
     assert req_security.ingestion_metadata["quality_characteristic"] == "信息安全性"
     assert case.system_env["quality_characteristic"] == "信息安全性"
+
+
+def test_quality_classification_prefers_llm_and_persists_method(monkeypatch):
+    class StubLLMService:
+        def classify_quality_characteristic(self, text, definitions, extra_texts=None):
+            return {
+                "category": "维护性",
+                "basis": "文本强调可维护与可扩展",
+                "matched_keywords": [],
+                "confidence": 0.91,
+                "method": "llm",
+            }
+
+    monkeypatch.setattr(analytics_module, "_LLM_SERVICE", None)
+    monkeypatch.setattr(analytics_module, "_LLM_SERVICE_INIT_FAILED", False)
+    monkeypatch.setattr(analytics_module, "_get_llm_service", lambda: StubLLMService())
+
+    req = Requirement(
+        id="REQ-MAINT",
+        original_text="系统需要便于扩展、重构和维护。",
+        extracted_entities={"module": "系统管理", "feature": "配置中心"},
+    )
+    case = TestCase(
+        test_case_id="TC-MAINT",
+        related_req_id="REQ-MAINT",
+        title="验证配置模块支持扩展与维护",
+        test_instruction=TestInstruction(
+            steps=["1. 检查配置模块是否支持独立扩展"],
+            expected_result="模块化清晰，可按配置扩展",
+        ),
+    )
+
+    result = classify_quality_category(req.original_text, ["扩展", "维护"])
+    assert result["category"] == "维护性"
+    assert result["method"] == "llm"
+
+    stats = build_statistics([req], [case])
+    summary = {row["分类"]: row for row in stats["category_summary"]}
+    assert summary["维护性"]["需求数"] == 1
+    assert summary["维护性"]["用例数"] == 1
+    assert req.ingestion_metadata["quality_characteristic"] == "维护性"
+    assert req.ingestion_metadata["quality_characteristic_method"] == "llm"
+    assert case.system_env["quality_characteristic"] == "维护性"
+    assert case.system_env["quality_characteristic_method"] == "llm"

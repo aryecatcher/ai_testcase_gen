@@ -39,16 +39,155 @@
 
 ### 1. 准备环境
 
-- Python 3.11+
-- Node.js 20+
-- 可选：PostgreSQL 15+
-- 可选：Ollama 或其他 OpenAI 兼容模型服务
+基础通用：
+
+- `Git`
+- `Python 3.11+`
+- `Node.js 20+`
+- 建议确认 `python`、`pip`、`npm` 命令可直接使用
+
+本地快速试用：
+
+- 必需：`Python 3.11+`
+- 必需：`Node.js 20+`
+- 可选：`Ollama` 或其他 OpenAI 兼容模型服务
+- 可选：`PostgreSQL 15+`
+- 不装 PostgreSQL 也可以，默认可先用 `SQLite`
+
+Linux 服务器部署：
+
+- 必需：`python3`
+- 必需：`python3-venv`
+- 必需：`node` / `npm`
+- 必需：`nginx`
+- 建议：`rsync`
+- 如果用 PostgreSQL：需提前安装并启动 `PostgreSQL 15+`
+- 如果用本机模型：需提前安装并启动 `Ollama`
+- 如果不用本机模型：需准备可访问的 OpenAI 兼容模型服务地址
+
+Docker 部署：
+
+- 必需：`Docker`
+- 必需：`Docker Compose`
+- 如果模型服务跑在宿主机：要确认容器能访问对应模型地址
+
+建议先手工确认以下命令可用：
+
+```bash
+git --version
+python --version
+node --version
+npm --version
+```
+
+Linux 服务器建议额外确认：
+
+```bash
+python3 --version
+nginx -v
+psql --version
+ollama --version
+docker --version
+docker compose version
+```
 
 ### 2. 克隆并准备配置
 
 ```bash
 git clone https://github.com/aryecatcher/ai_testcase_gen.git
 cd ai_testcase_gen
+```
+
+Windows PowerShell:
+
+```powershell
+git clone https://github.com/aryecatcher/ai_testcase_gen.git
+cd ai_testcase_gen
+```
+
+推荐先运行配置向导：
+
+```bash
+python scripts/configure.py
+```
+
+Windows PowerShell:
+
+```powershell
+python scripts/configure.py
+```
+
+配置向导会根据你选择的模式，自动生成以下文件中的一部分：
+
+- `.env`
+- `frontend/.env.local`
+- `.env.docker`
+- `deploy/generated/ai-testcase-backend.service`
+- `deploy/generated/nginx.production.conf`
+
+如果你准备在 Linux 服务器上半自动完成配置，可以直接使用无交互模式：
+
+```bash
+python scripts/configure.py \
+  --profile linux \
+  --non-interactive \
+  --yes \
+  --database-mode postgres \
+  --db-host 127.0.0.1 \
+  --db-port 5432 \
+  --db-user ai_testcase_user \
+  --db-password change_me \
+  --db-name ai_testcase_gen \
+  --backend-port 8002 \
+  --openai-base-url http://127.0.0.1:11434/v1 \
+  --openai-api-key ollama \
+  --llm-model-gen deepseek-r1:7b \
+  --kg-backend networkx \
+  --install-dir /opt/ai_testcase_gen \
+  --frontend-dist-dir /var/www/ai_testcase_gen/frontend/dist \
+  --server-name example.com
+```
+
+Linux 无交互模式会额外生成：
+
+- `.env.production`
+- `frontend/.env.production`
+- `deploy/generated/ai-testcase-backend.service`
+- `deploy/generated/ai-testcase-legacy-ui.service`
+- `deploy/generated/nginx.production.conf`
+- `deploy/generated/LINUX_DEPLOY.md`
+- `deploy/generated/init_postgres.sh`
+- `deploy/generated/check_ollama_model.sh`
+- `deploy/generated/install_linux.sh`
+
+其中：
+
+- `LINUX_DEPLOY.md` 会把后续复制、启用 `systemd`、部署 `nginx` 的命令按顺序列出来
+- `init_postgres.sh` 会在本机 PostgreSQL 场景下自动创建业务用户和数据库；远端 PostgreSQL 场景会给出可执行命令
+- `check_ollama_model.sh` 会探测 Ollama 是否安装、服务是否可达、模型是否存在；若缺失会提示 `ollama pull`
+- `install_linux.sh` 会尝试把仓库同步到部署目录、安装依赖、构建前端、下发 `systemd/nginx` 配置并做一次健康检查
+
+典型用法：
+
+```bash
+bash deploy/generated/init_postgres.sh
+bash deploy/generated/check_ollama_model.sh
+bash deploy/generated/install_linux.sh
+```
+
+执行前请确认服务器已安装：
+
+- `python3`
+- `python3-venv`
+- `node` / `npm`
+- `nginx`
+- `rsync`
+- 按你的配置准备好的 `PostgreSQL`
+- 按你的配置准备好的 `Ollama` 或 OpenAI 兼容模型服务
+
+如果你暂时不想使用配置向导，也可以手工复制模板：
+
+```bash
 cp .env.example .env
 ```
 
@@ -70,6 +209,7 @@ KG_BACKEND=networkx
 
 如果你只是本地快速试用，可以先保持 SQLite。
 如果你要部署到服务器，建议改成 PostgreSQL。
+如果你用 Docker 部署，建议使用配置向导生成 `.env.docker`，并确认其中的模型地址对容器可达。
 
 ### 3. 安装依赖
 
