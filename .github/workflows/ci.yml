@@ -10,6 +10,12 @@ jobs:
   quality-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+psycopg://ci_user:ci_pass@127.0.0.1:5432/ai_testcase_gen_ci
+      OPENAI_API_KEY: ollama
+      OPENAI_BASE_URL: http://127.0.0.1:11434/v1
+      LLM_MODEL_GEN: deepseek-r1:7b
+      KG_BACKEND: networkx
 
     steps:
       - name: Checkout
@@ -42,9 +48,13 @@ jobs:
         run: |
           pytest -q tests/test_progress_callback.py tests/test_minimal_regression.py
 
-      - name: Startup check (compile + import)
+      - name: Compile check
         run: |
           python -m py_compile ui/main.py src/core/ingestion/ingestor.py src/core/generation/generator.py src/core/output/exporter.py
+
+      - name: Import check
+        run: |
+          python -c "import importlib; importlib.import_module('src.data.database'); print('src.data.database import ok')"
           python -c "import importlib; importlib.import_module('ui.main'); print('ui.main import ok')"
 
       - name: Frontend build
