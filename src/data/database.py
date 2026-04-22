@@ -1,7 +1,11 @@
 from sqlmodel import SQLModel, create_engine, Session, select
 from typing import List, Optional
 import os
+from dotenv import load_dotenv
 from ..models.domain import Requirement, TestCase, GenerationJob
+
+load_dotenv()
+
 DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 if not DATABASE_URL:
     raise RuntimeError("缺少 DATABASE_URL 配置。当前版本仅支持 PostgreSQL，请在 .env 中配置 postgresql+psycopg 连接串。")
