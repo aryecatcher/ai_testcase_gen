@@ -205,6 +205,96 @@ ollama pull deepseek-r1:7b
 
 如果你不打算在服务器本机运行 Ollama，也可以跳过这一步，改用可访问的 OpenAI 兼容模型服务。
 
+### 1.2 CentOS / Rocky / AlmaLinux 安装方式参考
+
+如果你最终部署在 CentOS 系列服务器，建议优先按这一节执行。
+
+安装基础工具：
+
+```bash
+sudo dnf install -y git curl rsync
+```
+
+如果系统还在使用 `yum`，可将下文中的 `dnf` 替换为 `yum`。
+
+安装 Python 与虚拟环境：
+
+```bash
+sudo dnf install -y python3 python3-pip
+python3 --version
+```
+
+说明：
+
+- 某些 CentOS 版本默认没有单独的 `python3-venv` 包
+- 本项目脚本会优先尝试 `python3 -m venv`
+- 如果你的环境缺少 `venv` 模块，请额外安装对应 Python 扩展包
+
+安装 Nginx：
+
+```bash
+sudo dnf install -y nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+nginx -v
+```
+
+安装 Node.js 与 npm：
+
+```bash
+sudo dnf install -y nodejs npm
+node --version
+npm --version
+```
+
+如果系统仓库里的 Node.js 版本偏低，建议改用 NodeSource 或 `nvm` 安装 `Node.js 20+`。
+
+安装 PostgreSQL：
+
+```bash
+sudo dnf install -y postgresql-server postgresql
+sudo postgresql-setup --initdb || true
+sudo systemctl enable postgresql
+sudo systemctl start postgresql
+psql --version
+```
+
+如果你的环境使用 `postgresql-15` 或 `postgresql-16` 这类版本化服务名，请按实际服务名启停。
+
+安装 Ollama：
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama --version
+```
+
+拉取本项目默认模型示例：
+
+```bash
+ollama pull deepseek-r1:7b
+```
+
+CentOS 常用部署前检查命令：
+
+```bash
+python3 --version
+node --version
+npm --version
+psql --version
+nginx -v
+ollama --version
+getenforce
+systemctl status postgresql --no-pager
+systemctl status nginx --no-pager
+systemctl status ollama --no-pager
+ss -lntp | grep 5432 || true
+ss -lntp | grep 8002 || true
+ss -lntp | grep 11434 || true
+ollama list
+sudo -u postgres psql -c "\\l"
+sudo -u postgres psql -c "\\du"
+```
+
 ### 2. 克隆并准备配置
 
 ```bash
@@ -273,13 +363,15 @@ Linux 无交互模式会额外生成：
 - `deploy/generated/init_postgres.sh`
 - `deploy/generated/check_ollama_model.sh`
 - `deploy/generated/install_linux.sh`
+- `deploy/generated/install_centos.sh`
 
 其中：
 
 - `LINUX_DEPLOY.md` 会把后续复制、启用 `systemd`、部署 `nginx` 的命令按顺序列出来
 - `init_postgres.sh` 会在本机 PostgreSQL 场景下自动创建业务用户和数据库；远端 PostgreSQL 场景会给出可执行命令
 - `check_ollama_model.sh` 会探测 Ollama 是否安装、服务是否可达、模型是否存在；若缺失会提示 `ollama pull`
-- `install_linux.sh` 会尝试把仓库同步到部署目录、安装依赖、构建前端、下发 `systemd/nginx` 配置并做一次健康检查
+- `install_linux.sh` 会自动识别 `dnf / yum / apt-get`，同步仓库、安装依赖、构建前端、下发 `systemd/nginx` 配置并做一次健康检查
+- `install_centos.sh` 会显式按 CentOS 目标方式调用安装器，适合 CentOS / Rocky / AlmaLinux 直接执行
 
 典型用法：
 
@@ -287,6 +379,12 @@ Linux 无交互模式会额外生成：
 bash deploy/generated/init_postgres.sh
 bash deploy/generated/check_ollama_model.sh
 bash deploy/generated/install_linux.sh
+```
+
+CentOS / Rocky / AlmaLinux 推荐：
+
+```bash
+bash deploy/generated/install_centos.sh
 ```
 
 执行前请确认服务器已安装：
@@ -512,6 +610,7 @@ open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specifie
 - 本地试用：`PostgreSQL + Web V2`
 - 团队试用：`PostgreSQL + Web V2`
 - Linux 服务器：`Nginx + FastAPI + systemd + PostgreSQL`
+- CentOS 服务器：`Nginx + FastAPI + systemd + PostgreSQL + install_centos.sh`
 - 历史兼容：`Legacy V1`
 
 ## 文档导航

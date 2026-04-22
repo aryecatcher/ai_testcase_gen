@@ -310,8 +310,9 @@ def collect_answers(args: argparse.Namespace) -> WizardAnswers:
         default="/var/www/ai_testcase_gen/frontend/dist",
     )
     server_name = choose_value(args.server_name, interactive, label="Nginx server_name", default="_")
-    service_user = choose_value(args.service_user, interactive, label="systemd User", default="www-data")
-    service_group = choose_value(args.service_group, interactive, label="systemd Group", default="www-data")
+    service_default = "nginx" if profile == "linux" else "www-data"
+    service_user = choose_value(args.service_user, interactive, label="systemd User", default=service_default)
+    service_group = choose_value(args.service_group, interactive, label="systemd Group", default=service_default)
     postgres_admin_user = choose_value(
         args.postgres_admin_user,
         interactive,
@@ -422,6 +423,71 @@ def parse_database_url(answers: WizardAnswers) -> Dict[str, str]:
     }
 
 
+def render_package_manager_helpers() -> str:
+    return """detect_package_manager() {
+  if command -v dnf >/dev/null 2>&1; then
+    echo "dnf"
+    return 0
+  fi
+  if command -v yum >/dev/null 2>&1; then
+    echo "yum"
+    return 0
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "apt-get"
+    return 0
+  fi
+  echo "未找到支持的包管理器（dnf / yum / apt-get）。" >&2
+  return 1
+}
+
+install_system_packages() {
+  local pkg_mgr="$1"
+  case "$pkg_mgr" in
+    dnf)
+      sudo dnf install -y python3 python3-pip python3-venv nginx nodejs npm rsync curl postgresql postgresql-server
+      ;;
+    yum)
+      sudo yum install -y python3 python3-pip nginx nodejs npm rsync curl postgresql-server postgresql-contrib
+      ;;
+    apt-get)
+      sudo apt-get update
+      sudo apt-get install -y python3 python3-pip python3-venv nginx nodejs npm rsync curl postgresql postgresql-contrib
+      ;;
+    *)
+      echo "不支持的包管理器: $pkg_mgr" >&2
+      return 1
+      ;;
+  esac
+}
+
+ensure_postgresql_service() {
+  if systemctl list-unit-files | grep -Fq 'postgresql.service'; then
+    sudo systemctl enable postgresql
+    sudo systemctl start postgresql
+    return 0
+  fi
+  if systemctl list-unit-files | grep -Fq 'postgresql-15.service'; then
+    sudo systemctl enable postgresql-15
+    sudo systemctl start postgresql-15
+    return 0
+  fi
+  if systemctl list-unit-files | grep -Fq 'postgresql-16.service'; then
+    sudo systemctl enable postgresql-16
+    sudo systemctl start postgresql-16
+    return 0
+  fi
+  echo "未检测到 PostgreSQL systemd 服务，请手工启动 PostgreSQL。" >&2
+  return 1
+}
+
+ensure_nginx_service() {
+  sudo systemctl enable nginx
+  sudo systemctl start nginx
+}
+"""
+
+
 def render_systemd_backend(answers: WizardAnswers) -> str:
     return (
         "[Unit]\n"
@@ -523,7 +589,7 @@ def render_linux_deploy_notes(answers: WizardAnswers) -> str:
 bash deploy/generated/init_postgres.sh
 ```
 """
-    return f"""# Linux 部署执行清单
+    return f"""# Linux / CentOS 部署执行清单
 
 ## 1. 上传配置
 
@@ -543,6 +609,18 @@ npm install
 npm run build
 ```
 {postgres_init_note}
+
+CentOS / Rocky / AlmaLinux 推荐直接使用自动脚本：
+
+```bash
+bash deploy/generated/install_centos.sh
+```
+
+Ubuntu / Debian 或其他 Linux 环境可使用：
+
+```bash
+bash deploy/generated/install_linux.sh
+```
 
 ## 3. 部署前端产物
 
@@ -594,10 +672,10 @@ def render_postgres_init_script(answers: WizardAnswers) -> str:
     app_db = db["database"]
     is_local = host in {"127.0.0.1", "localhost"} or host.startswith("/var/run/postgresql")
     if is_local:
-        init_block = f"""sudo apt-get update
-sudo apt-get install -y postgresql postgresql-contrib
-sudo systemctl enable postgresql
-sudo systemctl start postgresql
+        init_block = f"""{render_package_manager_helpers().rstrip()}
+PKG_MGR="$(detect_package_manager)"
+install_system_packages "$PKG_MGR"
+ensure_postgresql_service || true
 sudo -u {answers.postgres_admin_user} psql -d postgres \\
   -v app_db='{app_db}' \\
   -v app_user='{app_user}' \\
@@ -681,10 +759,18 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")/../.." && pwd)"
 INSTALL_DIR="{answers.install_dir}"
 FRONTEND_DIST_DIR="{answers.frontend_dist_dir}"
+TARGET_OS="${{1:-auto}}"
 
 echo "[1/10] Installing system dependencies"
-sudo apt-get update
-sudo apt-get install -y python3-venv nginx nodejs npm rsync curl
+{render_package_manager_helpers().rstrip()}
+PKG_MGR="$(detect_package_manager)"
+if [ "$TARGET_OS" = "centos" ] && [ "$PKG_MGR" = "apt-get" ]; then
+  echo "当前机器检测到 apt-get，不像 CentOS。请改用 install_linux.sh 或在 CentOS 上执行 install_centos.sh。" >&2
+  exit 1
+fi
+install_system_packages "$PKG_MGR"
+ensure_nginx_service
+ensure_postgresql_service || true
 
 echo "[2/10] Ensuring install directories"
 sudo mkdir -p "$INSTALL_DIR"
@@ -749,6 +835,17 @@ echo "Deployment complete."
 """
 
 
+def render_centos_install_script() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+echo "Running CentOS-oriented installer"
+bash "$ROOT_DIR/deploy/generated/install_linux.sh" centos
+"""
+
+
 def generate_bundle(project_root: Path, answers: WizardAnswers) -> Dict[Path, str]:
     bundle: Dict[Path, str] = {}
     env_content = render_env(common_env_values(answers))
@@ -770,6 +867,7 @@ def generate_bundle(project_root: Path, answers: WizardAnswers) -> Dict[Path, st
         bundle[generated_dir / "init_postgres.sh"] = render_postgres_init_script(answers)
         bundle[generated_dir / "check_ollama_model.sh"] = render_ollama_probe_script(answers)
         bundle[generated_dir / "install_linux.sh"] = render_linux_install_script(answers)
+        bundle[generated_dir / "install_centos.sh"] = render_centos_install_script()
     if answers.profile == "legacy":
         generated_dir = project_root / "deploy" / "generated"
         bundle[generated_dir / "ai-testcase-legacy-ui.service"] = render_systemd_legacy(answers)

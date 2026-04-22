@@ -34,8 +34,8 @@ def make_answers(profile: str) -> WizardAnswers:
         install_dir="/srv/ai_testcase_gen",
         frontend_dist_dir="/srv/ai_testcase_gen/frontend/dist",
         server_name="example.com",
-        service_user="www-data",
-        service_group="www-data",
+        service_user="nginx" if profile == "linux" else "www-data",
+        service_group="nginx" if profile == "linux" else "www-data",
         postgres_port=5432,
         postgres_admin_user="postgres",
         docker_frontend_port=8080,
@@ -67,6 +67,7 @@ def test_generate_bundle_linux_contains_generated_service_files():
     assert Path("E:/repo/deploy/generated/init_postgres.sh") in bundle
     assert Path("E:/repo/deploy/generated/check_ollama_model.sh") in bundle
     assert Path("E:/repo/deploy/generated/install_linux.sh") in bundle
+    assert Path("E:/repo/deploy/generated/install_centos.sh") in bundle
     assert "VITE_BACKEND_URL=/api" in bundle[Path("E:/repo/frontend/.env.production")]
 
 
@@ -74,6 +75,7 @@ def test_render_systemd_backend_uses_custom_install_dir_and_port():
     content = render_systemd_backend(make_answers("linux"))
     assert "WorkingDirectory=/srv/ai_testcase_gen" in content
     assert "--port 8002" in content
+    assert "User=nginx" in content
 
 
 def test_render_nginx_config_uses_server_name_and_backend_port():
@@ -128,3 +130,11 @@ def test_collect_answers_non_interactive_linux():
     assert answers.install_dir == "/data/ai_testcase_gen"
     assert answers.server_name == "test.example.com"
     assert answers.postgres_admin_user == "rootpg"
+
+
+def test_collect_answers_non_interactive_linux_defaults_to_nginx_service_user():
+    parser = build_parser()
+    args = parser.parse_args(["--profile", "linux", "--non-interactive"])
+    answers = collect_answers(args)
+    assert answers.service_user == "nginx"
+    assert answers.service_group == "nginx"
