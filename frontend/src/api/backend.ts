@@ -76,6 +76,95 @@ export type GenerateJobStatus = {
   events: StreamUpdate[]
 }
 
+function shortenTechnicalDetail(raw: string, limit = 240): string {
+  const text = String(raw || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text) return ''
+  return text.length > limit ? `${text.slice(0, limit)}...` : text
+}
+
+function endpointLabel(url: string): string {
+  if (url.startsWith('/requirements/ingest')) return '需求解析'
+  if (url.startsWith('/requirements')) return '需求列表'
+  if (url.startsWith('/test_cases')) return '用例列表'
+  if (url.startsWith('/generate/stream')) return '生成任务'
+  if (url.includes('/status')) return '生成进度'
+  if (url.includes('/cancel')) return '取消生成'
+  if (url.startsWith('/export/excel')) return 'Excel 导出'
+  if (url.startsWith('/export/feishu-sheet')) return '飞书导出'
+  if (url.startsWith('/health')) return '后端健康检查'
+  if (url.startsWith('/startup-status')) return '启动检查'
+  if (url.startsWith('/kg/summary')) return '知识图谱摘要'
+  return '请求'
+}
+
+function timeoutHint(url: string): string {
+  if (url.startsWith('/requirements')) {
+    return '当前批次较大时，后端可能正在补充质量特性分类，请稍后重试。'
+  }
+  if (url.startsWith('/test_cases')) {
+    return '当前批次用例较多或后端较忙，请稍后重试。'
+  }
+  if (url.includes('/status')) {
+    return '生成任务可能仍在后台运行，请等待几秒后刷新进度。'
+  }
+  if (url.startsWith('/generate/stream')) {
+    return '生成任务启动较慢时会出现该提示，请确认模型服务和后端状态正常。'
+  }
+  return '请确认后端服务可访问，并稍后重试。'
+}
+
+function statusHint(status: number): string {
+  if (status === 400) return '请求参数不完整或格式不正确，请检查当前操作。'
+  if (status === 404) return '目标数据不存在，可能已被删除或页面状态已过期。'
+  if (status === 409) return '当前数据状态已变化，请刷新页面后重试。'
+  if (status === 422) return '提交内容格式不符合要求，请检查输入项。'
+  if (status === 500) return '后端处理时发生异常，请查看服务日志或稍后重试。'
+  if (status === 502 || status === 503 || status === 504) return '后端服务暂时不可用，请确认后端和模型服务已启动。'
+  return '请求未成功完成，请稍后重试。'
+}
+
+async function extractResponseDetail(resp: Response): Promise<string> {
+  const text = await resp.text().catch(() => '')
+  if (!text) return ''
+  try {
+    const payload = JSON.parse(text) as Record<string, unknown>
+    const detail = [payload.message, payload.detail, payload.error]
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .join(' ')
+    return detail || text
+  } catch {
+    return text
+  }
+}
+
+function buildTimeoutError(url: string, timeoutMs: number): Error {
+  const label = endpointLabel(url)
+  return new Error(`${label}加载超时。\n${timeoutHint(url)}\n技术信息：${url} 超过 ${timeoutMs}ms 未返回。`)
+}
+
+function buildNetworkError(url: string, reason: string): Error {
+  const label = endpointLabel(url)
+  const technical = shortenTechnicalDetail(reason)
+  return new Error(
+    `${label}请求失败，当前无法连接后端服务。\n请确认后端已经启动，且前端代理地址配置正确。\n${technical ? `技术信息：${technical}` : ''}`.trim(),
+  )
+}
+
+function buildHttpError(url: string, status: number, detail = ''): Error {
+  const label = endpointLabel(url)
+  const technical = shortenTechnicalDetail(detail)
+  const lines = [`${label}请求失败。`, statusHint(status)]
+  if (technical) {
+    lines.push(`技术信息：HTTP ${status}，${technical}`)
+  } else {
+    lines.push(`技术信息：HTTP ${status}`)
+  }
+  return new Error(lines.join('\n'))
+}
+
 async function requestJson<T>(url: string, init?: RequestInit, timeoutMs = 10000): Promise<T> {
   const controller = new AbortController()
   const timer = window.setTimeout(() => controller.abort(), timeoutMs)
@@ -87,15 +176,15 @@ async function requestJson<T>(url: string, init?: RequestInit, timeoutMs = 10000
     })
   } catch (e) {
     if ((e as Error)?.name === 'AbortError') {
-      throw new Error(`${url} timeout after ${timeoutMs}ms`)
+      throw buildTimeoutError(url, timeoutMs)
     }
-    throw e
+    throw buildNetworkError(url, e instanceof Error ? e.message : String(e))
   } finally {
     window.clearTimeout(timer)
   }
   if (!resp.ok) {
-    const text = await resp.text().catch(() => '')
-    throw new Error(`${url} failed: ${resp.status} ${text}`)
+    const detail = await extractResponseDetail(resp)
+    throw buildHttpError(url, resp.status, detail)
   }
   return (await resp.json()) as T
 }
@@ -134,15 +223,23 @@ export async function streamGenerateCases(
   onUpdate: (u: StreamUpdate) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const resp = await fetch(`/api/generate/stream?job_id=${encodeURIComponent(jobId)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(reqs),
-    signal,
-  })
+  let resp: Response
+  try {
+    resp = await fetch(`/api/generate/stream?job_id=${encodeURIComponent(jobId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reqs),
+      signal,
+    })
+  } catch (e) {
+    if ((e as Error)?.name === 'AbortError') {
+      throw e
+    }
+    throw buildNetworkError('/generate/stream', e instanceof Error ? e.message : String(e))
+  }
   if (!resp.ok || !resp.body) {
-    const text = await resp.text().catch(() => '')
-    throw new Error(`/generate/stream failed: ${resp.status} ${text}`)
+    const detail = await extractResponseDetail(resp)
+    throw buildHttpError('/generate/stream', resp.status, detail)
   }
   const reader = resp.body.getReader()
   const decoder = new TextDecoder()
@@ -172,10 +269,15 @@ export async function streamGenerateCases(
 }
 
 export async function cancelGenerateJob(jobId: string): Promise<void> {
-  const resp = await fetch(`/api/generate/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+  let resp: Response
+  try {
+    resp = await fetch(`/api/generate/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' })
+  } catch (e) {
+    throw buildNetworkError('/generate/cancel', e instanceof Error ? e.message : String(e))
+  }
   if (!resp.ok) {
-    const text = await resp.text().catch(() => '')
-    throw new Error(`cancel failed: ${resp.status} ${text}`)
+    const detail = await extractResponseDetail(resp)
+    throw buildHttpError('/generate/cancel', resp.status, detail)
   }
 }
 
@@ -191,8 +293,7 @@ export async function ingestRequirements(files: File[], replaceExisting = false)
   try {
     resp = await fetch('/api/requirements/ingest', { method: 'POST', body: fd })
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    throw new Error(`上传或解析请求失败，请检查后端服务连接。\n${msg}`)
+    throw buildNetworkError('/requirements/ingest', e instanceof Error ? e.message : String(e))
   }
   if (!resp.ok) {
     let detail = ''
@@ -210,20 +311,25 @@ export async function ingestRequirements(files: File[], replaceExisting = false)
     } catch {
       detail = await resp.text().catch(() => '')
     }
-    throw new Error(`/requirements/ingest failed: ${resp.status}\n${detail}`)
+    throw buildHttpError('/requirements/ingest', resp.status, detail)
   }
   return (await resp.json()) as IngestResponse
 }
 
 export async function exportCasesExcel(caseIds: string[]): Promise<Blob> {
-  const resp = await fetch('/api/export/excel', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ case_ids: caseIds }),
-  })
+  let resp: Response
+  try {
+    resp = await fetch('/api/export/excel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ case_ids: caseIds }),
+    })
+  } catch (e) {
+    throw buildNetworkError('/export/excel', e instanceof Error ? e.message : String(e))
+  }
   if (!resp.ok) {
-    const text = await resp.text().catch(() => '')
-    throw new Error(`/export/excel failed: ${resp.status} ${text}`)
+    const detail = await extractResponseDetail(resp)
+    throw buildHttpError('/export/excel', resp.status, detail)
   }
   return await resp.blob()
 }
@@ -244,14 +350,19 @@ export type FeishuSheetPayload = {
 }
 
 export async function exportCasesToFeishuSheet(payload: FeishuSheetPayload): Promise<Record<string, unknown>> {
-  const resp = await fetch('/api/export/feishu-sheet', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
+  let resp: Response
+  try {
+    resp = await fetch('/api/export/feishu-sheet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch (e) {
+    throw buildNetworkError('/export/feishu-sheet', e instanceof Error ? e.message : String(e))
+  }
   if (!resp.ok) {
-    const text = await resp.text().catch(() => '')
-    throw new Error(`/export/feishu-sheet failed: ${resp.status} ${text}`)
+    const detail = await extractResponseDetail(resp)
+    throw buildHttpError('/export/feishu-sheet', resp.status, detail)
   }
   return (await resp.json()) as Record<string, unknown>
 }

@@ -8,13 +8,14 @@ from loguru import logger
 from .repository import KnowledgeGraphRepository
 from .matcher import KeywordMatcher
 from ...models.domain import KGNodeModel, KGNodeType
+from ...config.runtime import KG_AUDIT_PATH, KG_STORAGE_PATH
 
 class NetworkXGraphRepository(KnowledgeGraphRepository):
     """
     Phase 0: In-Memory NetworkX Implementation.
     Acts as the legacy/fallback data source.
     """
-    def __init__(self, storage_path: str = "data/kg_graph.json", audit_path: str = "data/kg_audit.json"):
+    def __init__(self, storage_path: str = KG_STORAGE_PATH, audit_path: str = KG_AUDIT_PATH):
         self.graph = nx.DiGraph()
         self.storage_path = storage_path
         self.audit_path = audit_path

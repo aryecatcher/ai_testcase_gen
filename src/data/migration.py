@@ -4,11 +4,12 @@ from pathlib import Path
 from loguru import logger
 from .database import init_db, get_session
 from ..models.domain import Requirement, TestCase, ProjectContext
+from ..config.runtime import PROJECT_CONTEXT_JSON_PATH
 
-JSON_STORAGE_PATH = "data/project_context.json"
+JSON_STORAGE_PATH = PROJECT_CONTEXT_JSON_PATH
 
 def migrate_json_to_db():
-    """Migrate data from project_context.json to SQLite database."""
+    """Migrate data from project_context.json to PostgreSQL database."""
     if not os.path.exists(JSON_STORAGE_PATH):
         logger.info("No project_context.json found. Skipping migration.")
         return

@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 from typing import Any
+from src.config.runtime import APP_DATA_DIR
 
-DATA_DIR = Path(__file__).parent
+DATA_DIR = Path(APP_DATA_DIR)
 
 def save_json(name: str, data: Any) -> Path:
     DATA_DIR.mkdir(exist_ok=True)

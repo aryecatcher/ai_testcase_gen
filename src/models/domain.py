@@ -99,7 +99,7 @@ class Requirement(SQLModel, table=True):
     id: str = SQLField(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
     original_text: str
 
-    # Stored as JSON in SQLite — always plain dict
+    # Stored as JSON column content — always plain dict
     ingestion_metadata: Optional[Any] = SQLField(default=None, sa_column=Column(JSON))
     extracted_entities: Optional[Any] = SQLField(default=None, sa_column=Column(JSON))
     req_spec: Optional[Any] = SQLField(default=None, sa_column=Column(JSON))

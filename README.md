@@ -20,7 +20,7 @@
 - 在评审页按生成批次筛选、导出 Excel / 飞书
 - 按质量特性统计需求与用例
 - 使用 NetworkX / Neo4j 维护知识图谱
-- 支持 SQLite 本地试用与 PostgreSQL 服务器部署
+- 统一使用 PostgreSQL 持久化需求、用例与生成任务
 
 ## 版本形态
 
@@ -42,8 +42,11 @@
 基础通用：
 
 - `Git`
+  - 推荐：`2.30+`
 - `Python 3.11+`
+  - 推荐：`3.11.x`
 - `Node.js 20+`
+  - 推荐：`20 LTS`
 - 建议确认 `python`、`pip`、`npm` 命令可直接使用
 
 本地快速试用：
@@ -51,8 +54,7 @@
 - 必需：`Python 3.11+`
 - 必需：`Node.js 20+`
 - 可选：`Ollama` 或其他 OpenAI 兼容模型服务
-- 可选：`PostgreSQL 15+`
-- 不装 PostgreSQL 也可以，默认可先用 `SQLite`
+- 必需：`PostgreSQL 15+`
 
 Linux 服务器部署：
 
@@ -70,6 +72,30 @@ Docker 部署：
 - 必需：`Docker`
 - 必需：`Docker Compose`
 - 如果模型服务跑在宿主机：要确认容器能访问对应模型地址
+
+推荐版本汇总：
+
+- `Git`
+  - 推荐：`2.30+`
+- `Python`
+  - 最低：`3.11`
+  - 推荐：`3.11.x`
+- `Node.js`
+  - 最低：`20`
+  - 推荐：`20 LTS`
+- `npm`
+  - 推荐：`10+`
+- `PostgreSQL`
+  - 最低：`15`
+  - 推荐：`15` 或 `16`
+- `Nginx`
+  - 推荐：`1.18+`
+- `Docker`
+  - 推荐：`24+`
+- `Docker Compose`
+  - 推荐：`v2.20+`
+- `Ollama`
+  - 推荐：使用当前稳定版，建议 `0.3+`
 
 建议先手工确认以下命令可用：
 
@@ -90,6 +116,94 @@ ollama --version
 docker --version
 docker compose version
 ```
+
+### 1.1 Ubuntu 安装方式参考
+
+以下命令适合 Ubuntu 22.04/24.04 一类环境，主要用于安装本项目常见依赖。
+
+安装基础工具：
+
+```bash
+sudo apt update
+sudo apt install -y git curl rsync
+```
+
+建议目标版本：
+
+- `git 2.30+`
+- `curl 7.80+`
+- `rsync 3.2+`
+
+安装 Python 与虚拟环境：
+
+```bash
+sudo apt install -y python3 python3-pip python3-venv
+python3 --version
+```
+
+推荐版本：
+
+- `Python 3.11.x`
+
+安装 Nginx：
+
+```bash
+sudo apt install -y nginx
+sudo systemctl enable nginx
+sudo systemctl start nginx
+nginx -v
+```
+
+推荐版本：
+
+- `Nginx 1.18+`
+
+安装 Node.js 与 npm：
+
+```bash
+sudo apt install -y nodejs npm
+node --version
+npm --version
+```
+
+如果系统仓库里的 Node.js 版本偏低，建议改用 NodeSource 或 `nvm` 安装 `Node.js 20+`。
+
+推荐版本：
+
+- `Node.js 20 LTS`
+- `npm 10+`
+
+安装 PostgreSQL：
+
+```bash
+sudo apt install -y postgresql postgresql-contrib
+sudo systemctl enable postgresql
+sudo systemctl start postgresql
+psql --version
+```
+
+推荐版本：
+
+- `PostgreSQL 15` 或 `16`
+
+安装 Ollama：
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama --version
+```
+
+推荐版本：
+
+- `Ollama 0.3+` 或当前稳定版
+
+拉取本项目默认模型示例：
+
+```bash
+ollama pull deepseek-r1:7b
+```
+
+如果你不打算在服务器本机运行 Ollama，也可以跳过这一步，改用可访问的 OpenAI 兼容模型服务。
 
 ### 2. 克隆并准备配置
 
@@ -200,15 +314,15 @@ Copy-Item .env.example .env
 首次使用建议至少检查以下配置：
 
 ```env
-DATABASE_URL=sqlite:///data/app_database.db
+DATABASE_URL=postgresql+psycopg://ai_testcase_user:change_me@127.0.0.1:5432/ai_testcase_gen
 OPENAI_API_KEY=ollama
 OPENAI_BASE_URL=http://localhost:11434/v1
 LLM_MODEL_GEN=deepseek-r1:7b
 KG_BACKEND=networkx
 ```
 
-如果你只是本地快速试用，可以先保持 SQLite。
-如果你要部署到服务器，建议改成 PostgreSQL。
+当前版本仅支持 PostgreSQL，请先准备数据库、账号与连接串。
+无论本地试用还是服务器部署，都需要先完成 PostgreSQL 配置。
 如果你用 Docker 部署，建议使用配置向导生成 `.env.docker`，并确认其中的模型地址对容器可达。
 
 ### 3. 安装依赖
@@ -299,7 +413,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start-legacy-ui.ps1
 ### 场景 1：本地快速试用
 
 - 使用 `Web V2`
-- 数据库保持默认 `SQLite`
+- 数据库需配置为 `PostgreSQL`
 - 模型服务可使用本地 `Ollama`
 - 适合个人验证功能和调试页面
 
@@ -395,7 +509,7 @@ open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specifie
 
 ## 推荐部署路线
 
-- 本地试用：`SQLite + Web V2`
+- 本地试用：`PostgreSQL + Web V2`
 - 团队试用：`PostgreSQL + Web V2`
 - Linux 服务器：`Nginx + FastAPI + systemd + PostgreSQL`
 - 历史兼容：`Legacy V1`

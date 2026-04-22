@@ -10,7 +10,7 @@
 |---|---|
 | `src/` | 后端与核心业务逻辑（FastAPI + 生成流程 + KG + 导出器）。 |
 | `ui/` | Streamlit 前端（需求导入 / 生成 / 人工评审 / 导出 / KG 工作台）。 |
-| `data/` | 本地持久化数据（SQLite、KG JSON、审计日志、上下文备份等）。 |
+| `data/` | 本地持久化数据（KG JSON、审计日志、上下文备份、临时上传目录等）。 |
 | `docs/` | 需求样例与技术文档。 |
 | `tests/` | 核心链路/回归测试脚本。 |
 | `legacy/` | V1 归档（仅参考，不参与当前运行）。 |
@@ -98,7 +98,7 @@
 
 ### 4) `src/data/`（持久化）
 
-- [database.py](file:///e:/internship/fang/ai_testcase_gen/src/data/database.py)：SQLite 初始化与查询
+- [database.py](file:///e:/internship/fang/ai_testcase_gen/src/data/database.py)：PostgreSQL 初始化与查询
 - [migration.py](file:///e:/internship/fang/ai_testcase_gen/src/data/migration.py)：迁移辅助
 
 ### 5) `ui/`（前端）
@@ -113,7 +113,6 @@
 
 | 文件 | 说明 |
 |---|---|
-| `data/app_database.db` | SQLite 数据库（requirements/test_cases）。 |
 | `data/kg_graph.json` | NetworkX KG 图数据（会随版本自升级补齐增强本体）。 |
 | `data/kg_audit.json` | KG 审计日志。 |
 | `data/project_context.json.bak` | UI 上下文备份。 |

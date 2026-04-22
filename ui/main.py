@@ -23,11 +23,14 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 load_dotenv()
 
-_FIXED_LLM_MODEL = "deepseek-r1:7b"
-_FIXED_LLM_BASE_URL = "http://localhost:11434/v1"
-_FIXED_LLM_API_KEY = "ollama"
-
 from data.storage import load_json, save_json
+from src.config.runtime import (
+    LEGACY_LLM_API_KEY,
+    LEGACY_LLM_BASE_URL,
+    LEGACY_LLM_MODEL,
+    PROJECT_CONTEXT_JSON_PATH,
+    TEMP_UPLOAD_DIR,
+)
 from src.models.domain import ProjectContext, Requirement, TestCase
 from src.data.database import init_db, get_all_requirements, get_all_test_cases, save_requirement, save_test_case, get_session
 from src.data.migration import migrate_json_to_db
@@ -40,8 +43,13 @@ from src.core.ingestion.change_analyzer import (
 )
 from sqlmodel import Session
 
-_raw_backend_url = (os.getenv("BACKEND_URL") or "").strip() or "http://localhost:8002"
+_FIXED_LLM_MODEL = LEGACY_LLM_MODEL
+_FIXED_LLM_BASE_URL = LEGACY_LLM_BASE_URL
+_FIXED_LLM_API_KEY = LEGACY_LLM_API_KEY
+
+_raw_backend_url = (os.getenv("BACKEND_URL") or "").strip() or "http://127.0.0.1:8002"
 _BACKEND_URL = _raw_backend_url[:-1] if _raw_backend_url.endswith("/") else _raw_backend_url
+_TEMP_UPLOAD_PATH = Path(TEMP_UPLOAD_DIR)
 
 def _check_backend() -> tuple[bool, str]:
     parsed = urlparse(_BACKEND_URL)
@@ -728,7 +736,7 @@ async def call_api_kg_postmortem(module: str, failure: str):
         response.raise_for_status()
         return response.json()
 
-_PROJECT_CONTEXT_PATH = _PROJECT_ROOT / "data" / "project_context.json"
+_PROJECT_CONTEXT_PATH = Path(PROJECT_CONTEXT_JSON_PATH)
 
 # --- Inline SVG icons (flat stroke, no emoji) ---
 _S = 'xmlns="http://www.w3.org/2000/svg"'
@@ -1280,9 +1288,9 @@ def save_context() -> None:
         st.error(f"数据库保存失败: {e}")
 
 def _init_session() -> None:
-    # 1. Initialize Database and Migrate if necessary
+    # 1. Initialize PostgreSQL and migrate legacy JSON data if necessary
     init_db()
-    if not os.path.exists("data/app_database.db") or os.path.exists(_PROJECT_CONTEXT_PATH):
+    if os.path.exists(_PROJECT_CONTEXT_PATH):
         migrate_json_to_db()
 
     if "context" not in st.session_state:
@@ -1291,7 +1299,7 @@ def _init_session() -> None:
             reqs = get_all_requirements()
             tcs = get_all_test_cases()
             st.session_state.context = ProjectContext(
-                project_name="SQLite Project",
+                project_name="PostgreSQL Project",
                 requirements=reqs,
                 test_cases=tcs
             )
@@ -1581,8 +1589,8 @@ def render_tab_import() -> None:
             if not _ensure_frontend_services(force_retry=True):
                 st.error("模型服务初始化失败，请检查本地 Ollama 与 deepseek-r1:7b 是否可用。")
                 return
-            temp_path = _PROJECT_ROOT / "temp_upload"
-            temp_path.mkdir(exist_ok=True)
+            temp_path = _TEMP_UPLOAD_PATH
+            temp_path.mkdir(parents=True, exist_ok=True)
             all_reqs = []
             ingest_errors = []
             previous_requirements = list(st.session_state.context.requirements)

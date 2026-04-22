@@ -30,17 +30,47 @@ from src.core.ingestion.ingestor import RequirementIngestor
 from src.core.output.exporter import TestCaseExporter
 from src.core.output.feishu_client import FeishuClient
 from src.core.analytics import annotate_quality_characteristics
+from src.config.runtime import TEMP_UPLOAD_DIR
 
 load_dotenv()
 
 app = FastAPI(title="AI Test Case Generator API")
+
+
+def _short_error_text(exc: Exception, limit: int = 240) -> str:
+    text = " ".join(str(exc).split()).strip()
+    if not text:
+        return ""
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _friendly_runtime_error(message: str, exc: Exception | None = None) -> str:
+    detail = _short_error_text(exc) if exc else ""
+    if detail:
+        return f"{message} 技术信息：{detail}"
+    return message
+
+
+def _friendly_generation_error(exc: Exception) -> str:
+    detail = _short_error_text(exc).lower()
+    if "timeout" in detail:
+        return _friendly_runtime_error("用例生成超时，模型响应较慢，请稍后重试或检查模型服务负载。", exc)
+    if "connection" in detail or "connect" in detail:
+        return _friendly_runtime_error("用例生成失败，当前无法连接模型服务，请确认模型服务已启动且地址配置正确。", exc)
+    if "401" in detail or "unauthorized" in detail or "api key" in detail:
+        return _friendly_runtime_error("用例生成失败，模型服务认证未通过，请检查 API Key 或鉴权配置。", exc)
+    return _friendly_runtime_error("用例生成失败，请检查模型服务、网络连接或后端日志后重试。", exc)
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Global Error: {exc} | URL: {request.url}")
     return JSONResponse(
         status_code=500,
-        content={"message": "Internal Server Error", "detail": str(exc)},
+        content={
+            "message": "后端处理请求时发生异常，请稍后重试。",
+            "detail": _short_error_text(exc),
+        },
     )
 
 # CORS Middleware
@@ -114,7 +144,7 @@ def _to_jsonable(value: Any) -> Any:
 
 
 def _normalize_requirement_for_db(req: Requirement) -> Requirement:
-    # Ensure JSON columns are plain dicts before SQLModel writes them to SQLite JSON fields.
+    # Ensure JSON columns are plain dicts before SQLModel writes them to JSON fields.
     try:
         req.ingestion_metadata = _to_jsonable(getattr(req, "ingestion_metadata", None))
         req.extracted_entities = _to_jsonable(getattr(req, "extracted_entities", None))
@@ -245,18 +275,19 @@ async def _run_generation_job(job_id: str) -> None:
                     _append_job_event(job_state, {"type": "completed", "job_id": job_id, "message": "生成完毕"})
     except Exception as e:
         logger.exception(f"Generation job {job_id} failed: {e}")
+        friendly_error = _friendly_generation_error(e)
         with get_session() as session:
             job_state = session.get(GenerationJob, job_id)
             if job_state is not None:
                 job_state.status = "failed"
-                job_state.error = str(e)
+                job_state.error = friendly_error
                 job_state.completed_at = datetime.now()
                 session.merge(job_state)
                 session.commit()
         with get_session() as session:
             job_state = session.get(GenerationJob, job_id)
             if job_state is not None:
-                _append_job_event(job_state, {"type": "error", "job_id": job_id, "message": str(e)})
+                _append_job_event(job_state, {"type": "error", "job_id": job_id, "message": friendly_error})
     finally:
         GENERATION_CANCEL_FLAGS.pop(job_id, None)
 
@@ -401,7 +432,7 @@ async def ingest_requirements_files(
         raise HTTPException(status_code=400, detail="未提供上传文件。")
 
     ingestor = RequirementIngestor()
-    temp_dir = Path("temp_upload_api")
+    temp_dir = Path(TEMP_UPLOAD_DIR)
     temp_dir.mkdir(parents=True, exist_ok=True)
     all_requirements: List[Requirement] = []
     errors: List[Dict[str, str]] = []
@@ -448,7 +479,10 @@ async def ingest_requirements_files(
             session.commit()
         except Exception as e:
             logger.error(f"Failed to persist ingested requirements: {e}")
-            raise HTTPException(status_code=500, detail=f"保存到数据库失败：{e}")
+            raise HTTPException(
+                status_code=500,
+                detail=_friendly_runtime_error("需求已解析，但保存到数据库失败，请检查数据库连接或配置后重试。", e),
+            )
 
     return {
         "saved": len(all_requirements),
@@ -547,7 +581,7 @@ def export_cases_to_feishu_sheet(payload: FeishuSheetExportPayload):
         start_cell=payload.start_cell or "A1",
     )
     if not ok:
-        detail = client.last_error or "飞书 Sheet 推送失败。"
+        detail = client.last_error or "飞书 Sheet 推送失败，请检查飞书认证信息、表格参数和网络连接。"
         raise HTTPException(status_code=500, detail=detail)
 
     final_sheet_id = sheet_id or client.detect_sheet_id(spreadsheet_token) or ""

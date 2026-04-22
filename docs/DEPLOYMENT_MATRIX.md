@@ -3,7 +3,7 @@
 ## 1. 本地快速试用
 
 - 适用：个人验证、功能体验
-- 组合：`SQLite + Web V2`
+- 组合：`PostgreSQL + Web V2`
 - 要求：
   - Python
   - Node.js
@@ -15,7 +15,7 @@
 ## 2. 本地兼容模式
 
 - 适用：沿用旧 UI 习惯
-- 组合：`SQLite + Legacy V1`
+- 组合：`PostgreSQL + Legacy V1`
 - 启动：
   - `scripts/start-backend.*`
   - `scripts/start-legacy-ui.*`

@@ -8,7 +8,7 @@
 - **前端展示**: Streamlit (提供实时交互与指标监控)
 - **后端服务**: FastAPI (高性能异步 REST 接口，支持 SSE 流式传输)
 - **状态管理**: LangGraph (驱动有状态的 AI 思考过程)
-- **持久化层**: SQLModel + SQLite (结构化存储需求与用例)
+- **持久化层**: SQLModel + PostgreSQL (结构化存储需求、用例与生成任务)
 - **知识引擎**: NetworkX + Neo4j (混合图谱驱动的业务约束感知)
 
 ---

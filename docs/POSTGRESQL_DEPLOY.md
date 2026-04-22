@@ -1,10 +1,10 @@
 # PostgreSQL 初始化与部署说明
 
-本文档面向当前项目的服务器部署场景，目标是把默认 `SQLite` 切换为 `PostgreSQL`，并保留现有的 `FastAPI + 前端 + 生成任务后台队列` 运行方式。
+本文档面向当前项目的服务器部署场景。当前版本已统一使用 `PostgreSQL`，并保留现有的 `FastAPI + 前端 + 生成任务后台队列` 运行方式。
 
 ## 1. 前置说明
 
-- 当前项目已支持通过环境变量 `DATABASE_URL` 切换数据库
+- 当前项目通过环境变量 `DATABASE_URL` 连接 PostgreSQL
 - 项目启动时会自动执行 `SQLModel.metadata.create_all(...)`
 - 这意味着：
   - 你只需要先创建数据库和账号
@@ -68,7 +68,7 @@ KG_BACKEND=auto
 说明：
 
 - `DATABASE_URL`
-  - 正式部署时建议显式配置，不再使用默认 SQLite
+  - 当前版本必须显式配置 PostgreSQL `DATABASE_URL`
 - `GENERATION_QUEUE_WORKERS`
   - 表示后台生成任务 worker 数量
   - 建议从 `1` 或 `2` 开始，根据服务器 CPU / 内存 / 模型能力逐步调优

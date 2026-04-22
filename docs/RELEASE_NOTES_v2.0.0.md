@@ -8,7 +8,7 @@
 
 - 前端：`Vue 3 + TypeScript + Vite`
 - 后端：`FastAPI`
-- 数据库：支持 `SQLite` 与 `PostgreSQL`
+- 数据库：统一使用 `PostgreSQL`
 - 任务：支持生成任务后台队列与状态持久化
 
 ## 重点更新

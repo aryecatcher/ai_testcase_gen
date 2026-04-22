@@ -67,7 +67,10 @@ class FeishuClient:
         resp.raise_for_status()
         data = resp.json()
         if data.get("code") != 0:
-            raise RuntimeError(f"Feishu API failed: {data}")
+            raise RuntimeError(
+                "飞书接口调用失败，请检查应用权限、表格参数或租户凭证。 "
+                f"技术信息：{str(data)[:300]}"
+            )
         return data
 
     @staticmethod

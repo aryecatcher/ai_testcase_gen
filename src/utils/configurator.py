@@ -187,20 +187,12 @@ def collect_answers(args: argparse.Namespace) -> WizardAnswers:
 
     print(f"\n当前模式: {PROFILE_LABELS[profile]}")
 
-    default_db_mode = "postgres" if profile in {"linux", "docker"} else "sqlite"
-    database_mode = choose_choice(
-        args.database_mode,
-        interactive,
-        label="请选择数据库",
-        options=[("sqlite", "SQLite"), ("postgres", "PostgreSQL")],
-        default=default_db_mode,
-    )
+    database_mode = "postgres"
+    print("数据库: PostgreSQL（当前版本仅支持 PostgreSQL）")
 
     postgres_port = choose_int(args.db_port, interactive, label="PostgreSQL 端口", default=5432)
     if args.database_url:
         database_url = args.database_url
-    elif database_mode == "sqlite":
-        database_url = "sqlite:///data/app_database.db"
     else:
         db_host_default = "127.0.0.1" if profile != "docker" else "postgres"
         db_host = choose_value(args.db_host, interactive, label="PostgreSQL 主机", default=db_host_default)
@@ -375,12 +367,20 @@ def render_env(values: Dict[str, str]) -> str:
 def common_env_values(answers: WizardAnswers) -> Dict[str, str]:
     return {
         "BACKEND_URL": f"http://127.0.0.1:{answers.backend_port}",
+        "APP_DATA_DIR": "data",
+        "KG_STORAGE_PATH": "data/kg_graph.json",
+        "KG_AUDIT_PATH": "data/kg_audit.json",
+        "PROJECT_CONTEXT_JSON_PATH": "data/project_context.json",
+        "TEMP_UPLOAD_DIR": "temp_upload_api",
         "DATABASE_URL": answers.database_url,
         "GENERATION_QUEUE_WORKERS": str(answers.generation_queue_workers),
         "GENERATION_RESUME_ON_STARTUP": bool_text(answers.generation_resume_on_startup),
         "OPENAI_API_KEY": answers.openai_api_key,
         "OPENAI_BASE_URL": answers.openai_base_url,
         "LLM_MODEL_GEN": answers.llm_model_gen,
+        "LEGACY_LLM_MODEL": answers.llm_model_gen,
+        "LEGACY_LLM_BASE_URL": answers.openai_base_url,
+        "LEGACY_LLM_API_KEY": answers.openai_api_key,
         "KG_BACKEND": answers.kg_backend,
         "USE_SEMANTIC_MATCHER": bool_text(answers.use_semantic_matcher),
         "NEO4J_URI": answers.neo4j_uri,
@@ -412,8 +412,6 @@ def render_env_production(answers: WizardAnswers) -> str:
 
 
 def parse_database_url(answers: WizardAnswers) -> Dict[str, str]:
-    if answers.database_mode != "postgres":
-        return {}
     parsed = urlparse(answers.database_url)
     return {
         "host": parsed.hostname or "127.0.0.1",
@@ -487,15 +485,10 @@ def render_nginx_config(answers: WizardAnswers) -> str:
 
 
 def render_docker_env(answers: WizardAnswers) -> str:
-    if answers.database_mode == "postgres":
-        parsed = urlparse(answers.database_url)
-        postgres_user = parsed.username or "ai_testcase_user"
-        postgres_password = parsed.password or "change_me"
-        postgres_db = parsed.path.lstrip("/") or "ai_testcase_gen"
-    else:
-        postgres_user = "ai_testcase_user"
-        postgres_password = "change_me"
-        postgres_db = "ai_testcase_gen"
+    parsed = urlparse(answers.database_url)
+    postgres_user = parsed.username or "ai_testcase_user"
+    postgres_password = parsed.password or "change_me"
+    postgres_db = parsed.path.lstrip("/") or "ai_testcase_gen"
     values = {
         "POSTGRES_DB": postgres_db,
         "POSTGRES_USER": postgres_user,
@@ -774,8 +767,7 @@ def generate_bundle(project_root: Path, answers: WizardAnswers) -> Dict[Path, st
         bundle[generated_dir / "ai-testcase-legacy-ui.service"] = render_systemd_legacy(answers)
         bundle[generated_dir / "nginx.production.conf"] = render_nginx_config(answers)
         bundle[generated_dir / "LINUX_DEPLOY.md"] = render_linux_deploy_notes(answers)
-        if answers.database_mode == "postgres":
-            bundle[generated_dir / "init_postgres.sh"] = render_postgres_init_script(answers)
+        bundle[generated_dir / "init_postgres.sh"] = render_postgres_init_script(answers)
         bundle[generated_dir / "check_ollama_model.sh"] = render_ollama_probe_script(answers)
         bundle[generated_dir / "install_linux.sh"] = render_linux_install_script(answers)
     if answers.profile == "legacy":
@@ -877,7 +869,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yes", action="store_true", help="跳过写入确认")
     parser.add_argument("--check", action="store_true", help="生成后做基础连通性检查")
 
-    parser.add_argument("--database-mode", choices=["sqlite", "postgres"])
+    parser.add_argument("--database-mode", choices=["postgres"])
     parser.add_argument("--database-url")
     parser.add_argument("--db-host")
     parser.add_argument("--db-port", type=int)

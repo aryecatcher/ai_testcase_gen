@@ -2,23 +2,18 @@ from sqlmodel import SQLModel, create_engine, Session, select
 from typing import List, Optional
 import os
 from ..models.domain import Requirement, TestCase, GenerationJob
-
-# Database configuration
-DB_FILE = "data/app_database.db"
-DEFAULT_DATABASE_URL = f"sqlite:///{DB_FILE}"
-DATABASE_URL = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+if not DATABASE_URL:
+    raise RuntimeError("缺少 DATABASE_URL 配置。当前版本仅支持 PostgreSQL，请在 .env 中配置 postgresql+psycopg 连接串。")
+if not DATABASE_URL.startswith("postgresql+psycopg://"):
+    raise RuntimeError("DATABASE_URL 配置无效。当前版本仅支持 postgresql+psycopg:// 开头的 PostgreSQL 连接串。")
 
 # Create engine
 engine_kwargs = {"echo": False, "pool_pre_ping": True}
-if DATABASE_URL.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
 engine = create_engine(DATABASE_URL, **engine_kwargs)
 
 def init_db():
     """Initialize database and create tables."""
-    # Ensure data directory exists
-    if DATABASE_URL.startswith("sqlite"):
-        os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
     SQLModel.metadata.create_all(engine)
 
 def get_session():
