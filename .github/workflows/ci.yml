@@ -57,6 +57,53 @@ jobs:
           python -c "import importlib; importlib.import_module('src.data.database'); print('src.data.database import ok')"
           python -c "import importlib; importlib.import_module('ui.main'); print('ui.main import ok')"
 
+      - name: Linux deployment artifact check
+        run: |
+          python scripts/configure.py \
+            --profile linux \
+            --non-interactive \
+            --yes \
+            --db-host 127.0.0.1 \
+            --db-port 5432 \
+            --db-user ai_testcase_user \
+            --db-password change_me \
+            --db-name ai_testcase_gen \
+            --postgres-admin-user postgres \
+            --backend-port 8002 \
+            --frontend-port 5173 \
+            --openai-base-url http://127.0.0.1:11434/v1 \
+            --openai-api-key ollama \
+            --llm-model-gen deepseek-r1:7b \
+            --kg-backend networkx \
+            --install-dir /opt/ai_testcase_gen \
+            --frontend-dist-dir /var/www/ai_testcase_gen/frontend/dist \
+            --server-name ci.example.internal
+          test -f .env.production
+          test -f frontend/.env.production
+          test -f deploy/generated/ai-testcase-backend.service
+          test -f deploy/generated/ai-testcase-legacy-ui.service
+          test -f deploy/generated/nginx.production.conf
+          test -f deploy/generated/install_linux.sh
+          test -f deploy/generated/init_postgres.sh
+          test -f deploy/generated/check_ollama_model.sh
+          python - <<'PY'
+          from pathlib import Path
+          env_text = Path(".env.production").read_text(encoding="utf-8")
+          assert "DATABASE_URL=postgresql+psycopg://" in env_text
+          assert "KG_BACKEND=networkx" in env_text
+          service_text = Path("deploy/generated/ai-testcase-backend.service").read_text(encoding="utf-8")
+          assert "WorkingDirectory=/opt/ai_testcase_gen" in service_text
+          assert "--port 8002" in service_text
+          nginx_text = Path("deploy/generated/nginx.production.conf").read_text(encoding="utf-8")
+          assert "proxy_pass http://127.0.0.1:8002/;" in nginx_text
+          print("linux deployment artifacts ok")
+          PY
+
+      - name: Bash syntax check
+        run: |
+          bash -n scripts/*.sh
+          bash -n deploy/generated/*.sh
+
       - name: Frontend build
         working-directory: frontend
         run: |
