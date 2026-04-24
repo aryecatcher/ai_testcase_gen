@@ -205,138 +205,57 @@ ollama pull deepseek-r1:7b
 
 如果你不打算在服务器本机运行 Ollama，也可以跳过这一步，改用可访问的 OpenAI 兼容模型服务。
 
-### 1.2 CentOS / Rocky / AlmaLinux 安装方式参考
+### 1.2 CentOS / Rocky / AlmaLinux 最短部署流程
 
-如果你最终部署在 CentOS 系列服务器，建议优先按这一节执行。
+如果你最终部署在 CentOS 系列服务器，**先看这一节就够了**。其他本地开发、Docker、Windows 章节可以先跳过。
 
-安装基础工具：
-
-```bash
-sudo dnf install -y git curl rsync
-```
-
-如果系统还在使用 `yum`，可将下文中的 `dnf` 替换为 `yum`。
-
-安装 Python 与虚拟环境：
+#### 第 0 步：准备系统依赖
 
 ```bash
-sudo dnf install -y python3 python3-pip
-python3 --version
-```
-
-说明：
-
-- 某些 CentOS 版本默认没有单独的 `python3-venv` 包
-- 本项目脚本会优先尝试 `python3 -m venv`
-- 如果你的环境缺少 `venv` 模块，请额外安装对应 Python 扩展包
-
-安装 Nginx：
-
-```bash
-sudo dnf install -y nginx
-sudo systemctl enable nginx
-sudo systemctl start nginx
-nginx -v
-```
-
-安装 Node.js 与 npm：
-
-```bash
-sudo dnf install -y nodejs npm
-node --version
-npm --version
-```
-
-如果系统仓库里的 Node.js 版本偏低，建议改用 NodeSource 或 `nvm` 安装 `Node.js 20+`。
-
-安装 PostgreSQL：
-
-```bash
-sudo dnf install -y postgresql-server postgresql
+sudo dnf install -y git curl rsync python3 python3-pip nginx nodejs npm postgresql-server postgresql
 sudo postgresql-setup --initdb || true
 sudo systemctl enable postgresql
 sudo systemctl start postgresql
-psql --version
-```
-
-如果你的环境使用 `postgresql-15` 或 `postgresql-16` 这类版本化服务名，请按实际服务名启停。
-
-安装 Ollama：
-
-```bash
+sudo systemctl enable nginx
+sudo systemctl start nginx
 curl -fsSL https://ollama.com/install.sh | sh
-ollama --version
-```
-
-拉取本项目默认模型示例：
-
-```bash
 ollama pull deepseek-r1:7b
 ```
 
-CentOS 常用部署前检查命令：
+如果系统使用 `yum`，把上面的 `dnf` 换成 `yum` 即可。
 
-```bash
-python3 --version
-node --version
-npm --version
-psql --version
-nginx -v
-ollama --version
-getenforce
-systemctl status postgresql --no-pager
-systemctl status nginx --no-pager
-systemctl status ollama --no-pager
-ss -lntp | grep 5432 || true
-ss -lntp | grep 8002 || true
-ss -lntp | grep 11434 || true
-ollama list
-sudo -u postgres psql -c "\\l"
-sudo -u postgres psql -c "\\du"
-```
-
-### 2. 克隆并准备配置
+#### 第 1 步：克隆项目
 
 ```bash
 git clone https://github.com/aryecatcher/ai_testcase_gen.git
 cd ai_testcase_gen
 ```
 
-Windows PowerShell:
+#### 第 2 步：首次配置并安装
 
-```powershell
-git clone https://github.com/aryecatcher/ai_testcase_gen.git
-cd ai_testcase_gen
-```
-
-推荐先运行配置向导：
+推荐直接执行这一条命令：
 
 ```bash
-python scripts/configure.py
+bash scripts/install-first-time-centos.sh
 ```
 
-Windows PowerShell:
+这一步会依次完成：
 
-```powershell
-python scripts/configure.py
-```
+- 配置 PostgreSQL 连接信息
+- 配置模型服务地址和模型名
+- 配置安装目录
+- 配置前端部署目录
+- 配置域名 `server_name`
+- 生成 `.env.production`、systemd、nginx 配置
+- 自动执行 CentOS 安装脚本
 
-配置向导会根据你选择的模式，自动生成以下文件中的一部分：
-
-- `.env`
-- `frontend/.env.local`
-- `.env.docker`
-- `deploy/generated/ai-testcase-backend.service`
-- `deploy/generated/nginx.production.conf`
-
-如果你准备在 Linux 服务器上半自动完成配置，可以直接使用无交互模式：
+如果你已经确定全部参数，也可以用无交互方式：
 
 ```bash
-python scripts/configure.py \
+python3 scripts/configure.py \
   --profile linux \
   --non-interactive \
   --yes \
-  --database-mode postgres \
   --db-host 127.0.0.1 \
   --db-port 5432 \
   --db-user ai_testcase_user \
@@ -350,68 +269,33 @@ python scripts/configure.py \
   --install-dir /opt/ai_testcase_gen \
   --frontend-dist-dir /var/www/ai_testcase_gen/frontend/dist \
   --server-name example.com
-```
 
-Linux 无交互模式会额外生成：
-
-- `.env.production`
-- `frontend/.env.production`
-- `deploy/generated/ai-testcase-backend.service`
-- `deploy/generated/ai-testcase-legacy-ui.service`
-- `deploy/generated/nginx.production.conf`
-- `deploy/generated/LINUX_DEPLOY.md`
-- `deploy/generated/init_postgres.sh`
-- `deploy/generated/check_ollama_model.sh`
-- `deploy/generated/install_linux.sh`
-- `deploy/generated/install_centos.sh`
-
-其中：
-
-- `LINUX_DEPLOY.md` 会把后续复制、启用 `systemd`、部署 `nginx` 的命令按顺序列出来
-- `init_postgres.sh` 会在本机 PostgreSQL 场景下自动创建业务用户和数据库；远端 PostgreSQL 场景会给出可执行命令
-- `check_ollama_model.sh` 会探测 Ollama 是否安装、服务是否可达、模型是否存在；若缺失会提示 `ollama pull`
-- `install_linux.sh` 会自动识别 `dnf / yum / apt-get`，同步仓库、安装依赖、构建前端、下发 `systemd/nginx` 配置并做一次健康检查
-- `install_centos.sh` 会显式按 CentOS 目标方式调用安装器，适合 CentOS / Rocky / AlmaLinux 直接执行
-
-典型用法：
-
-```bash
-bash deploy/generated/init_postgres.sh
-bash deploy/generated/check_ollama_model.sh
-bash deploy/generated/install_linux.sh
-```
-
-CentOS / Rocky / AlmaLinux 推荐：
-
-```bash
 bash deploy/generated/install_centos.sh
 ```
 
-如果你希望把“第一次配置 + 安装”收成一条命令，也可以直接执行：
+#### 第 3 步：以后只做启停
 
-```bash
-bash scripts/install-first-time-centos.sh --yes
-```
+首次安装完成后，后续**不需要重新配置环境**，直接使用下面 3 个脚本：
 
-这个脚本会先调用配置向导，让你填写或读取以下信息：
-
-- PostgreSQL 连接信息
-- 模型服务地址和模型名
-- 安装目录
-- 前端部署目录
-- 域名 `server_name`
-
-然后自动执行 `deploy/generated/install_centos.sh` 完成首次安装。
-
-首次安装完成后，后续日常操作不需要重新配置环境，只需要使用这些脚本：
+启动：
 
 ```bash
 bash scripts/start-centos-services.sh
+```
+
+查看状态：
+
+```bash
 bash scripts/status-centos-services.sh
+```
+
+停止：
+
+```bash
 bash scripts/stop-centos-services.sh
 ```
 
-如果你还需要连同 Legacy UI 一起启停，可追加参数：
+如果你还需要连同 Legacy UI 一起启停，可追加 `--with-legacy`：
 
 ```bash
 bash scripts/start-centos-services.sh --with-legacy
@@ -419,41 +303,179 @@ bash scripts/status-centos-services.sh --with-legacy
 bash scripts/stop-centos-services.sh --with-legacy
 ```
 
-执行前请确认服务器已安装：
+#### 第 4 步：确认访问地址
 
-- `python3`
-- `python3-venv`
-- `node` / `npm`
-- `nginx`
-- `rsync`
-- 按你的配置准备好的 `PostgreSQL`
-- 按你的配置准备好的 `Ollama` 或 OpenAI 兼容模型服务
+- 前端：`http://你的域名/`
+- 后端健康检查：`http://127.0.0.1:8002/health`
+- 如果没配域名，也可以先访问服务器 IP
 
-如果你暂时不想使用配置向导，也可以手工复制模板：
+#### 会生成哪些关键文件
+
+- `.env.production`
+- `frontend/.env.production`
+- `deploy/generated/ai-testcase-backend.service`
+- `deploy/generated/nginx.production.conf`
+- `deploy/generated/install_centos.sh`
+
+#### 最常用检查命令
 
 ```bash
-cp .env.example .env
+python3 --version
+node --version
+npm --version
+psql --version
+nginx -v
+ollama --version
+ollama list
+ss -lntp | grep 5432 || true
+ss -lntp | grep 8002 || true
+ss -lntp | grep 11434 || true
+sudo systemctl status postgresql --no-pager
+sudo systemctl status nginx --no-pager
+sudo systemctl status ai-testcase-backend --no-pager
 ```
 
-Windows PowerShell:
+#### 常见报错与解决方法
 
-```powershell
-Copy-Item .env.example .env
+**1. `python3: command not found`**
+
+- 原因：Python 没安装
+- 处理：
+
+```bash
+sudo dnf install -y python3 python3-pip
 ```
 
-首次使用建议至少检查以下配置：
+**2. `psql: command not found`**
 
-```env
-DATABASE_URL=postgresql+psycopg://ai_testcase_user:change_me@127.0.0.1:5432/ai_testcase_gen
-OPENAI_API_KEY=ollama
-OPENAI_BASE_URL=http://localhost:11434/v1
-LLM_MODEL_GEN=deepseek-r1:7b
-KG_BACKEND=networkx
+- 原因：PostgreSQL 客户端没安装
+- 处理：
+
+```bash
+sudo dnf install -y postgresql
 ```
 
-当前版本仅支持 PostgreSQL，请先准备数据库、账号与连接串。
-无论本地试用还是服务器部署，都需要先完成 PostgreSQL 配置。
-如果你用 Docker 部署，建议使用配置向导生成 `.env.docker`，并确认其中的模型地址对容器可达。
+**3. `Failed to enable unit: Unit file postgresql.service does not exist`**
+
+- 原因：PostgreSQL 服务名可能是版本化的，如 `postgresql-15`
+- 处理：
+
+```bash
+systemctl list-unit-files | grep postgres
+sudo systemctl enable postgresql-15
+sudo systemctl start postgresql-15
+```
+
+**4. `Ollama 未安装` 或 `ollama: command not found`**
+
+- 原因：模型服务未安装
+- 处理：
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull deepseek-r1:7b
+```
+
+**5. `Ollama 服务未运行或不可访问`**
+
+- 原因：Ollama 没启动，或 `OPENAI_BASE_URL` 填错
+- 处理：
+
+```bash
+systemctl status ollama --no-pager
+curl http://127.0.0.1:11434/api/tags
+```
+
+- 如果不是本机 Ollama，请把配置里的 `OPENAI_BASE_URL` 改成真实可访问地址
+
+**6. `未发现模型: deepseek-r1:7b`**
+
+- 原因：模型还没拉取
+- 处理：
+
+```bash
+ollama pull deepseek-r1:7b
+```
+
+**7. `Permission denied`**
+
+- 原因：脚本没有执行权限，或目录权限不足
+- 处理：
+
+```bash
+chmod +x scripts/*.sh
+chmod +x deploy/generated/*.sh
+```
+
+- 如果是安装目录或前端目录权限问题，检查：
+
+```bash
+ls -ld /opt/ai_testcase_gen
+ls -ld /var/www/ai_testcase_gen
+```
+
+**8. `nginx: [emerg]` 或 `nginx -t` 失败**
+
+- 原因：nginx 配置错误，常见是 `server_name`、目录路径、端口冲突
+- 处理：
+
+```bash
+sudo nginx -t
+sudo cat /etc/nginx/conf.d/ai-testcase.conf
+```
+
+- 然后确认：
+  - `root` 目录存在
+  - `proxy_pass` 指向 `127.0.0.1:8002`
+  - `server_name` 填写正确
+
+**9. `curl http://127.0.0.1:8002/health` 失败**
+
+- 原因：后端服务没起来，或端口没监听
+- 处理：
+
+```bash
+sudo systemctl status ai-testcase-backend --no-pager
+journalctl -u ai-testcase-backend -n 100 --no-pager
+ss -lntp | grep 8002 || true
+```
+
+**10. `DATABASE_URL` 连接失败 / PostgreSQL 登录失败**
+
+- 原因：数据库账号、密码、库名、地址不对
+- 处理：
+
+```bash
+sudo -u postgres psql -c "\du"
+sudo -u postgres psql -c "\l"
+psql "postgresql://ai_testcase_user:change_me@127.0.0.1:5432/ai_testcase_gen" -c "select 1;"
+```
+
+**11. 页面打不开，但服务都显示启动**
+
+- 原因：防火墙、SELinux、nginx 目录权限、域名解析有问题
+- 处理：
+
+```bash
+systemctl status firewalld --no-pager
+firewall-cmd --list-all
+getenforce
+```
+
+- 如需放行 HTTP / HTTPS：
+
+```bash
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --reload
+```
+
+#### 一句话记忆
+
+- 第一次：`bash scripts/install-first-time-centos.sh`
+- 以后启动：`bash scripts/start-centos-services.sh`
+- 看状态：`bash scripts/status-centos-services.sh`
+- 停止：`bash scripts/stop-centos-services.sh`
 
 ### 3. 安装依赖
 
@@ -506,40 +528,16 @@ powershell -ExecutionPolicy Bypass -File scripts/start-frontend.ps1
 
 ### 4.1 CentOS 推荐使用方式
 
-如果你最终部署在 CentOS / Rocky / AlmaLinux，推荐把流程固定为两段：
+如果你最终部署在 CentOS / Rocky / AlmaLinux，直接按前面的 [CentOS / Rocky / AlmaLinux 最短部署流程](file:///e:/internship/fang/ai_testcase_gen/README.md#L208-L478) 执行即可。
 
-第一次：
-
-```bash
-bash scripts/install-first-time-centos.sh --yes
-```
-
-这一步会完成：
-
-- 配置数据库
-- 配置模型地址
-- 配置安装目录和域名
-- 执行安装
-
-以后：
+这里只记最短 4 条命令：
 
 ```bash
+bash scripts/install-first-time-centos.sh
 bash scripts/start-centos-services.sh
-```
-
-查看状态：
-
-```bash
 bash scripts/status-centos-services.sh
-```
-
-停止服务：
-
-```bash
 bash scripts/stop-centos-services.sh
 ```
-
-后续只做启停和状态检查，不需要重新跑配置向导，除非你要修改数据库、模型地址、域名或安装目录。
 
 ### 4.2 启动后如何使用项目
 
