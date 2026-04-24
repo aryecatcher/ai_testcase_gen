@@ -387,6 +387,38 @@ CentOS / Rocky / AlmaLinux 推荐：
 bash deploy/generated/install_centos.sh
 ```
 
+如果你希望把“第一次配置 + 安装”收成一条命令，也可以直接执行：
+
+```bash
+bash scripts/install-first-time-centos.sh --yes
+```
+
+这个脚本会先调用配置向导，让你填写或读取以下信息：
+
+- PostgreSQL 连接信息
+- 模型服务地址和模型名
+- 安装目录
+- 前端部署目录
+- 域名 `server_name`
+
+然后自动执行 `deploy/generated/install_centos.sh` 完成首次安装。
+
+首次安装完成后，后续日常操作不需要重新配置环境，只需要使用这些脚本：
+
+```bash
+bash scripts/start-centos-services.sh
+bash scripts/status-centos-services.sh
+bash scripts/stop-centos-services.sh
+```
+
+如果你还需要连同 Legacy UI 一起启停，可追加参数：
+
+```bash
+bash scripts/start-centos-services.sh --with-legacy
+bash scripts/status-centos-services.sh --with-legacy
+bash scripts/stop-centos-services.sh --with-legacy
+```
+
 执行前请确认服务器已安装：
 
 - `python3`
@@ -472,7 +504,44 @@ powershell -ExecutionPolicy Bypass -File scripts/start-frontend.ps1
 - 前端：`http://127.0.0.1:5173`
 - 后端：`http://127.0.0.1:8002`
 
-### 4.1 启动后如何使用项目
+### 4.1 CentOS 推荐使用方式
+
+如果你最终部署在 CentOS / Rocky / AlmaLinux，推荐把流程固定为两段：
+
+第一次：
+
+```bash
+bash scripts/install-first-time-centos.sh --yes
+```
+
+这一步会完成：
+
+- 配置数据库
+- 配置模型地址
+- 配置安装目录和域名
+- 执行安装
+
+以后：
+
+```bash
+bash scripts/start-centos-services.sh
+```
+
+查看状态：
+
+```bash
+bash scripts/status-centos-services.sh
+```
+
+停止服务：
+
+```bash
+bash scripts/stop-centos-services.sh
+```
+
+后续只做启停和状态检查，不需要重新跑配置向导，除非你要修改数据库、模型地址、域名或安装目录。
+
+### 4.2 启动后如何使用项目
 
 推荐按下面顺序体验：
 
