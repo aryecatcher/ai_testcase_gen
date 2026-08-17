@@ -1,11 +1,13 @@
 from typing import List, Dict, Any
 from loguru import logger
 from ..ai.llm_service import LLMService
-from ...models.domain import TestCase, TestInstruction, TestDataSets
+from ...models.domain import TestCase
+from ..generation.validators import ValidationInterceptor
 
 class FeedbackManager:
     def __init__(self, llm_service: LLMService):
         self.llm_service = llm_service
+        self.validator = ValidationInterceptor()
         # Ideally we inject this, but for now we instantiate or import global
         from ..kg.graph_service import KnowledgeGraphService
         self.kg_service = KnowledgeGraphService()
@@ -38,27 +40,19 @@ class FeedbackManager:
         refined_objs = []
         for raw in refined_raw:
             try:
-                # Construct TestDataSets safely
                 td_raw = raw.get("test_data", {})
-                test_data = TestDataSets(
-                    valid=td_raw.get("valid", {}),
-                    invalid=td_raw.get("invalid", {})
-                )
-                
-                # We assume the LLM returns the full structure. 
-                # If it's a refinement, we might want to keep the old ID or generate a new one?
-                # Usually refinement implies updating the same logical case, but technically it's a new version.
-                # Let's generate a new ID for the refined version but link it if we had a parent_id field (we don't yet).
-                
                 tc = TestCase(
                     related_req_id=raw.get("related_req_id", "unknown"), # LLM might lose this, need to preserve it
-                    title=raw.get("title", "Refined Case"),
-                    test_instruction=TestInstruction(
-                        pre_condition=raw.get("precondition", "None"),
-                        steps=raw.get("steps", []),
-                        expected_result=raw.get("expected_result", ""),
-                        test_data_sets=test_data
-                    ),
+                    title=self.validator.clean_text(raw.get("title", "Refined Case")) or "Refined Case",
+                    test_instruction={
+                        "pre_condition": self.validator.clean_text(raw.get("precondition", "None")) or "系统已完成基础部署，测试数据准备完成。",
+                        "steps": self.validator.normalize_steps(raw.get("steps", []), raw.get("title", "Refined Case")),
+                        "expected_result": self.validator.clean_text(raw.get("expected_result", "")) or "系统按照需求规则处理，并返回明确结果。",
+                        "test_data_sets": {
+                            "valid": td_raw.get("valid", {}) if isinstance(td_raw, dict) else {},
+                            "invalid": td_raw.get("invalid", {}) if isinstance(td_raw, dict) else {}
+                        }
+                    },
                     methodology=raw.get("methodology", []),
                     dimension=raw.get("type", "Functional"),
                     priority=raw.get("priority", "P2"),

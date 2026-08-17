@@ -1,0 +1,17 @@
+# Global default owner
+* @aryecatcher
+
+# Web V2
+/frontend/ @aryecatcher
+
+# Backend and core services
+/src/ @aryecatcher
+
+# Legacy UI
+/ui/ @aryecatcher
+
+# Deployment and release assets
+/deploy/ @aryecatcher
+/scripts/ @aryecatcher
+/.github/ @aryecatcher
+/docs/ @aryecatcher

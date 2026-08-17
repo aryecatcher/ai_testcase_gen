@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.ruff_cache/
+
+.venv/
+venv/
+ENV/
+env/
+
+# Local environment variables
+.env
+.env.local
+.env.docker
+
+# Local app data / caches (do not commit)
+data/*.db
+data/*project_context*.bak
+data/kg_audit.json
+data/kg_candidates.json
+data/llm_cache.json
+data/project_context.json
+data/feishu_sheet_settings.json
+
+docling_output.txt
+temp_api_test.txt
+
+# Temp uploads
+temp_upload/
+
+# OS / editor
+.DS_Store
+Thumbs.db

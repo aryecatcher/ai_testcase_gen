@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-testcase-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_testcase_gen}
+      POSTGRES_USER: ${POSTGRES_USER:-ai_testcase_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: ai-testcase-backend
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://ai_testcase_user:change_me@postgres:5432/ai_testcase_gen}
+      GENERATION_QUEUE_WORKERS: ${GENERATION_QUEUE_WORKERS:-1}
+      GENERATION_RESUME_ON_STARTUP: ${GENERATION_RESUME_ON_STARTUP:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-ollama}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:11434/v1}
+      LLM_MODEL_GEN: ${LLM_MODEL_GEN:-deepseek-r1:7b}
+      KG_BACKEND: ${KG_BACKEND:-networkx}
+      NEO4J_URI: ${NEO4J_URI:-}
+      NEO4J_USER: ${NEO4J_USER:-}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+    ports:
+      - "${BACKEND_PORT:-8002}:8002"
+    volumes:
+      - ./data:/app/data
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_BACKEND_URL: /api
+    container_name: ai-testcase-frontend
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+
+volumes:
+  postgres_data:

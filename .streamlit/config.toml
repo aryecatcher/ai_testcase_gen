@@ -1,0 +1,12 @@
+# 加快本地开发与首屏体验（可按需调整）
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = true
+
+[server]
+# Windows 下可略减文件监视开销；开发时若改代码不自动刷新可改回 auto
+fileWatcherType = "none"
+enableCORS = true
+enableXsrfProtection = true
